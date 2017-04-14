@@ -97,7 +97,7 @@ define ADD_TARGET_RULE
         $${TARGET_DIR}/${1}: $${${1}_OBJS} $${${1}_PREREQS}
 	    @mkdir -p $$(dir $$@)
 	    $$(strip $${${1}_LINKER} -o $$@ $${LDFLAGS} $${${1}_LDFLAGS} \
-	        $${${1}_OBJS} $${LDLIBS} $${${1}_LDLIBS})
+	        $${${1}_OBJS} $${${1}_LDLIBS} $${LDLIBS})
 	    $${${1}_POSTMAKE}
     endif
     endif
@@ -367,72 +367,67 @@ ifeq (${OSTYPE}, SunOS)
   endif
 endif
 
-# Set compiler and flags based on discovered hardware
+#  Set compiler and flags based on discovered hardware
+#
+#  By default, debug symbols are included in all builds (even optimized).
+#
+#  BUILDOPTIMIZED  will disable debug symbols (leaving it just optimized)
+#  BUILDDEBUG      will disable optimization  (leaving it just with debug symbols)
+#  BUILDSTACKTRACE will enable stack trace on crashes, only works for Linux
+#                  set to 0 on command line to disable (it's enabled by default for Linux)
+#
+#  BUILDPROFILE used to add -pg to LDFLAGS, and remove -D_GLIBCXX_PARALLE from CXXFLAGS and LDFLAGS,
+#  and remove -fomit-frame-pointer from CXXFLAGS.  It added a bunch of complication and wasn't
+#  really used.
 
 ifeq (${OSTYPE}, Linux)
   CC        ?= gcc
   CXX       ?= g++
-  CXXFLAGS  := -pthread -fPIC -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare # -Wformat -Wall -Wextra
-  LDFLAGS   := -pthread -lm
 
-  CXXFLAGS  += -D_GLIBCXX_PARALLEL -fopenmp
-  LDFLAGS   +=                     -fopenmp
+  CXXFLAGS  += -D_GLIBCXX_PARALLEL -pthread -fopenmp -fPIC
+  LDFLAGS   += -D_GLIBCXX_PARALLEL -pthread -fopenmp -lm
 
   CXXFLAGS  += -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat
 
-  ifeq ($(BUILDPROFILE), 1)
-    CXXFLAGS  +=
-    LDFLAGS   += -pg
+  BUILDSTACKTRACE ?= 1
+
+  ifeq ($(BUILDOPTIMIZED), 1)
   else
-    CXXFLAGS  += -D_GLIBCXX_PARALLEL
-    LDFLAGS   += -D_GLIBCXX_PARALLEL
+    CXXFLAGS += -g3
   endif
 
   ifeq ($(BUILDDEBUG), 1)
-    CXXFLAGS  += -g
   else
-    ifeq ($(BUILDPROFILE), 1)
-      CXXFLAGS   += -O4 -funroll-loops -fexpensive-optimizations -finline-functions
-    else
-      CXXFLAGS   += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
-    endif
+    CXXFLAGS += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
   endif
 endif
 
 
 ifeq (${OSTYPE}, Darwin)
-  CLANG = $(shell echo `${CXX} --version 2>&1 | grep -c clang`)
-
   CC       ?= gcc
   CXX      ?= g++
+
+  CLANG = $(shell echo `${CXX} --version 2>&1 | grep -c clang`)
+
   ifeq ($(CLANG), 0)
-     CXXFLAGS := -pthread -fopenmp -fPIC -m64 -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat
-     LDFLAGS  := -pthread -fopenmp -lm
+     CXXFLAGS += -D_GLIBCXX_PARALLEL -fopenmp
+     LDFLAGS  += -D_GLIBCXX_PARALLEL -fopenmp
   else
-     CXXFLAGS := -DBROKEN_CLANG_OpenMP -pthread -fPIC -m64 -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat
-     LDFLAGS  := -pthread -lm
+     CXXFLAGS += -DBROKEN_CLANG_OpenMP
+     LDFLAGS  += 
   endif
 
-  ifeq ($(BUILDPROFILE), 1)
-    CXXFLAGS  +=
-    LDFLAGS   += -pg
-  else
-    CXXFLAGS  += -D_GLIBCXX_PARALLEL
-    LDFLAGS   += -D_GLIBCXX_PARALLEL
-  endif
+  CXXFLAGS += -pthread -fPIC -m64 -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat
+  LDFLAGS  += -pthread -lm
 
-  CXXFLAGS  +=
-  LDFLAGS   +=
+  ifeq ($(BUILDOPTIMIZED), 1)
+  else
+    CXXFLAGS += -g3
+  endif
 
   ifeq ($(BUILDDEBUG), 1)
-    CXXFLAGS  += -g
-# -fno-omit-frame-pointer
   else
-    ifeq ($(BUILDPROFILE), 1)
-      CXXFLAGS   += -g3 -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fno-omit-frame-pointer
-    else
-      CXXFLAGS   +=     -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
-    endif
+    CXXFLAGS += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
   endif
 endif
 
@@ -442,11 +437,10 @@ ifeq (${MACHINETYPE}, amd64)
   CC       ?= gcc48
   CXX      ?= g++48
 
-  CXXFLAGS := -pthread -fPIC -Wall -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat -Wextra -Wno-parentheses
-  LDFLAGS  := -pthread -lm
+  CXXFLAGS  += -I/usr/local/include -D_GLIBCXX_PARALLEL -pthread -fopenmp -fPIC
+  LDFLAGS   += -L/usr/local/lib     -D_GLIBCXX_PARALLEL -pthread -fopenmp -rpath /usr/local/lib/gcc48 -lm -lexecinfo
 
-  CXXFLAGS  += -fopenmp
-  LDFLAGS   += -fopenmp -rpath /usr/local/lib/gcc48
+  CXXFLAGS  += -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat -Wno-parentheses
 
   #  Google Performance Tools malloc and heapchecker (HEAPCHECK=normal)
   #CXXFLAGS  +=
@@ -456,31 +450,17 @@ ifeq (${MACHINETYPE}, amd64)
   #CXXFLAGS  +=
   #LDFLAGS   += -lprofiler
 
-  ifeq ($(BUILDPROFILE), 1)
-    CXXFLAGS  +=
-    LDFLAGS   += -pg
-  else
-    CXXFLAGS  += -D_GLIBCXX_PARALLEL
-    LDFLAGS   += -D_GLIBCXX_PARALLEL
-  endif
-
-  CXXFLAGS  +=             -I/usr/local/include
-  LDFLAGS   +=             -L/usr/local/lib
-
   #  callgrind
   #CXXFLAGS  += -g3 -Wa,--gstabs -save-temps
 
-  #CXXFLAGS  += -DLIBUNWIND -I/usr/local/include
-  #LDFLAGS   +=             -L/usr/local/lib -lunwind -lunwind-x86_64
+  ifeq ($(BUILDOPTIMIZED), 1)
+  else
+    CXXFLAGS += -g3
+  endif
 
   ifeq ($(BUILDDEBUG), 1)
-    CXXFLAGS  += -g3
   else
-    ifeq ($(BUILDPROFILE), 1)
-      CXXFLAGS   += -g3 -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fno-omit-frame-pointer
-    else
-      CXXFLAGS   +=     -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
-    endif
+    CXXFLAGS += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
   endif
 endif
 endif
@@ -491,46 +471,116 @@ ifeq (${MACHINETYPE}, arm)
   CC       ?= gcc48
   CXX      ?= g++48
 
-  CXXFLAGS  := -pthread -fPIC -Wall -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat -Wextra
-  LDFLAGS   := -pthread -lm
+  CXXFLAGS  += -I/usr/local/include -D_GLIBCXX_PARALLEL -pthread -fopenmp -fPIC
+  LDFLAGS   += -L/usr/local/lib     -D_GLIBCXX_PARALLEL -pthread -fopenmp -rpath /usr/local/lib/gcc48 -lm
 
-  CXXFLAGS  += -D_GLIBCXX_PARALLEL -fopenmp
-  LDFLAGS   += -D_GLIBCXX_PARALLEL -fopenmp -rpath /usr/local/lib/gcc48
+  CXXFLAGS  += -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat -Wno-parentheses
+  CXXFLAGS  += -funroll-loops -fomit-frame-pointer
+  LDFLAGS   += 
 
-  CXXFLAGS  += -I/usr/local/include -O3 -funroll-loops -fomit-frame-pointer
-  LDFLAGS   += -L/usr/local/lib
+  ifeq ($(BUILDOPTIMIZED), 1)
+  else
+    CXXFLAGS += -g3
+  endif
+
+  ifeq ($(BUILDDEBUG), 1)
+  else
+    CXXFLAGS += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
+  endif
 endif
 endif
+
 
 ifneq (,$(findstring CYGWIN, ${OSTYPE}))
   CC        ?= gcc
   CXX       ?= g++
-  CXXFLAGS  := -pthread -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare
-  LDFLAGS   := -pthread -lm
 
-  CXXFLAGS  += -fopenmp
-  LDFLAGS   += -fopenmp
+  CXXFLAGS  := -fopenmp -pthread
+  LDFLAGS   := -fopenmp -pthread -lm
 
   CXXFLAGS  += -Wall -Wextra -Wno-write-strings -Wno-unused -Wno-char-subscripts -Wno-sign-compare -Wformat
 
-  ifeq ($(BUILDPROFILE), 1)
-    CXXFLAGS  +=
-    LDFLAGS   += -pg
+  ifeq ($(BUILDOPTIMIZED), 1)
   else
-    CXXFLAGS  += 
-    LDFLAGS   += 
+    CXXFLAGS += -g3
   endif
 
   ifeq ($(BUILDDEBUG), 1)
-    CXXFLAGS  += -g
   else
-    ifeq ($(BUILDPROFILE), 1)
-      CXXFLAGS   += -O4 -funroll-loops -fexpensive-optimizations -finline-functions
-    else
-      CXXFLAGS   += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
-    endif
+    CXXFLAGS += -O4 -funroll-loops -fexpensive-optimizations -finline-functions -fomit-frame-pointer
   endif
 endif
+
+
+#  Stack tracing support.  Wow, what a pain.  Only Linux is supported.  This is just documentation,
+#  don't actually enable any of this stuff!
+#
+#  backward-cpp looks very nice, only a single header file.  But it needs libberty (-liberty) and
+#  libbfd (-lbfd).  The former should be installed with gcc, and the latter is in elfutils.  On
+#  three out of our three development machines, it fails for various reasons.
+#
+#  libunwind is pretty basic.
+#
+#  libbacktrace works (on Linux) and is simple enough to include in our tree.
+#
+#  None of these give any useful information on BSDs (which includes OS X aka macOS).
+#
+#
+#  Backtraces with libunwind.  Not informative on FreeBSD.
+#CXXFLAGS  += -DLIBUNWIND
+#LDFLAGS   +=
+#LDLIBS    += -lunwind -lunwind-x86_64
+#
+#
+#  Backtraces with libbacktrace.  FreeBSD works, but trace is empty.
+#BUILDSTACK = 1
+#CXXFLAGS  += -DLIBBACKTRACE
+#LDFLAGS   +=
+#LDLIBS    +=
+#
+#
+#  Backtraces with backward-cpp.
+#
+#  Stack walking:
+#    BACKWARD_HAS_UNWIND    - used by gcc/clang for exception handling
+#    BACKWARD_HAS_BACKTRACE - part of glib, not as accurate, more portable
+#
+#  Stack interpretation:
+#    BACKWARE_HAS_DW               - most information, libdw, (elfutils or libdwarf)
+#    BACKWARD_HAS_BFD              - some information, libbfd
+#    BACKWARD_HAS_BACKTRACE_SYMBOL - minimal information (file and function), portable
+#
+#  helix   fails with: cannot find -liberty
+#  gryphon fails with: cannot find -lbfd
+#  freebsd can't install a working elfutils, needed for libdw"
+#    In file included from AS_UTL/AS_UTL_stackTrace.C:183:0:
+#    AS_UTL/backward.hpp:241:30: fatal error: elfutils/libdw.h: No such file or directory
+#     #  include <elfutils/libdw.h>
+#
+#CXXFLAGS  += -DBACKWARDCPP -DBACKWARD_HAS_BFD
+#LDFLAGS   +=
+#LDLIBS    += -lbfd -liberty -ldl -lz
+#
+#  Needs libdw, elfutils
+#CXXFLAGS  += -DBACKWARDCPP -DBACKWARD_HAS_DW
+#LDFLAGS   +=
+#LDLIBS    += -ldl -lz
+#
+#  Generates nothing useful, no function names, just binary names
+#CXXFLAGS  += -DBACKWARDCPP
+#LDFLAGS   +=
+#LDLIBS    += -ldl -lz
+#
+#
+#  No backtrace support.
+#CXXFLAGS   += -DNOBACKTRACE
+
+ifeq (${BUILDSTACKTRACE}, 1)
+CXXFLAGS  += -DLIBBACKTRACE
+else
+CXXFLAGS  += -DNOBACKTRACE
+endif
+
 
 # Include the main user-supplied submakefile. This also recursively includes
 # all other user-supplied submakefiles.
@@ -555,6 +605,8 @@ all: UPDATE_VERSION MAKE_DIRS \
      ${TARGET_DIR}/lib/canu/Execution.pm \
      ${TARGET_DIR}/lib/canu/Gatekeeper.pm \
      ${TARGET_DIR}/lib/canu/Grid.pm \
+     ${TARGET_DIR}/lib/canu/Grid_Cloud.pm \
+     ${TARGET_DIR}/lib/canu/Grid_DNANexus.pm \
      ${TARGET_DIR}/lib/canu/Grid_LSF.pm \
      ${TARGET_DIR}/lib/canu/Grid_PBSTorque.pm \
      ${TARGET_DIR}/lib/canu/Grid_SGE.pm \
@@ -569,6 +621,7 @@ all: UPDATE_VERSION MAKE_DIRS \
      ${TARGET_DIR}/lib/canu/OverlapMMap.pm \
      ${TARGET_DIR}/lib/canu/OverlapMaln.pm \
      ${TARGET_DIR}/lib/canu/OverlapStore.pm \
+     ${TARGET_DIR}/lib/canu/Report.pm \
      ${TARGET_DIR}/lib/canu/Unitig.pm
 	@echo ""
 	@echo "Success!"
@@ -643,6 +696,12 @@ ${TARGET_DIR}/lib/canu/Gatekeeper.pm: pipelines/canu/Gatekeeper.pm
 ${TARGET_DIR}/lib/canu/Grid.pm: pipelines/canu/Grid.pm
 	cp -pf pipelines/canu/Grid.pm ${TARGET_DIR}/lib/canu/
 
+${TARGET_DIR}/lib/canu/Grid_Cloud.pm: pipelines/canu/Grid_Cloud.pm
+	cp -pf pipelines/canu/Grid_Cloud.pm ${TARGET_DIR}/lib/canu/
+
+${TARGET_DIR}/lib/canu/Grid_DNANexus.pm: pipelines/canu/Grid_DNANexus.pm
+	cp -pf pipelines/canu/Grid_DNANexus.pm ${TARGET_DIR}/lib/canu/
+
 ${TARGET_DIR}/lib/canu/Grid_LSF.pm: pipelines/canu/Grid_LSF.pm
 	cp -pf pipelines/canu/Grid_LSF.pm ${TARGET_DIR}/lib/canu/
 
@@ -685,10 +744,14 @@ ${TARGET_DIR}/lib/canu/OverlapMaln.pm: pipelines/canu/OverlapMaln.pm
 ${TARGET_DIR}/lib/canu/OverlapStore.pm: pipelines/canu/OverlapStore.pm
 	cp -pf pipelines/canu/OverlapStore.pm ${TARGET_DIR}/lib/canu/
 
+${TARGET_DIR}/lib/canu/Report.pm: pipelines/canu/Report.pm
+	cp -pf pipelines/canu/Report.pm ${TARGET_DIR}/lib/canu/
+
 ${TARGET_DIR}/lib/canu/Unitig.pm: pipelines/canu/Unitig.pm
 	cp -pf pipelines/canu/Unitig.pm ${TARGET_DIR}/lib/canu/
 
 #  Makefile processed.  Report that we're starting the build.
 
 ${info Building for '${OSTYPE}' '${OSVERSION}' as '${MACHINETYPE}' into '${DESTDIR}${PREFIX}/$(OSTYPE)-$(MACHINETYPE)/{bin,obj}'}
+${info CC ${CC} CXX ${CXX}}
 #${info Using LD_RUN_PATH '${LD_RUN_PATH}'}

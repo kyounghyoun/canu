@@ -39,13 +39,13 @@
 use strict;
 
 use FindBin;
-use Cwd;
+use Cwd qw(getcwd abs_path);
 
 use lib "$FindBin::RealBin/lib";
 use lib "$FindBin::RealBin/lib/canu/lib/perl5";
 use lib "$FindBin::RealBin/lib/canu/lib64/perl5";
 
-use File::Path qw(make_path remove_tree);
+use File::Path 2.08 qw(make_path remove_tree);
 
 use Carp;
 
@@ -55,10 +55,12 @@ use canu::Execution;
 use canu::Configure;
 
 use canu::Grid;
+use canu::Grid_Cloud;
 use canu::Grid_SGE;
 use canu::Grid_Slurm;
 use canu::Grid_PBSTorque;
 use canu::Grid_LSF;
+use canu::Grid_DNANexus;
 
 use canu::Gatekeeper;
 use canu::Meryl;
@@ -93,11 +95,20 @@ setDefaults();
 
 my $bin = getBinDirectory();  #  Path to binaries, reset later.
 my $cmd = undef;              #  Temporary string passed to system().
-my $wrk = undef;              #  Path to our assembly directory.
 my $asm = undef;              #  Name of our assembly.
+
+#  What a mess.  We can't set the version string until after we have a bin directory, and
+#  Defaults.pm can't call stuff in Execution.pm.  So, we need to special case setting the version
+#  string.
+
+setVersion($bin);
 
 #  Check for the presence of a -options switch BEFORE we do any work.
 #  This lets us print the default values of options.
+
+if (scalar(@ARGV) == 0) {
+    printHelp(1);
+}
 
 foreach my $arg (@ARGV) {
     if (($arg eq "-options") ||
@@ -108,7 +119,7 @@ foreach my $arg (@ARGV) {
 
     if (($arg eq "-version") ||
         ($arg eq "--version")) {
-        system("$bin/gatekeeperCreate --version");
+        print getGlobal("version") . "\n";
         exit(0);
     }
 }
@@ -120,32 +131,33 @@ foreach my $arg (@ARGV) {
 #  to use these when we resubmit ourself to the grid.  We can't simply dump
 #  all of @ARGV into here, because we need to fix up relative paths first.
 
-my $mode = undef;
-my $step = "run";
-my $haveRaw = 0;
+my $rootdir       = undef;
+my $readdir       = undef;
+my $mode          = undef;
+my $step          = "run";
+my $haveRaw       = 0;
 my $haveCorrected = 0;
 
 while (scalar(@ARGV)) {
     my $arg = shift @ARGV;
 
-    if      ($arg =~ m/^-d/) {
-        $wrk = shift @ARGV;
-        $wrk = "$ENV{'PWD'}/$wrk" if ($wrk !~ m!^/!);
-        addCommandLineOption("-d \"$wrk\"");
-        setGlobal("onExitDir", $wrk);
+    if     (($arg eq "-h") || ($arg eq "-help") || ($arg eq "--help")) {
+        printHelp(1);
+
+    } elsif ($arg eq "-d") {
+        $rootdir = shift @ARGV;
 
     } elsif ($arg eq "-p") {
         $asm = shift @ARGV;
-        addCommandLineOption("-p \"$asm\"");
-        setGlobal("onExitNam", $asm);
+        addCommandLineOption("-p '$asm'");
 
     } elsif ($arg eq "-s") {
         my $spec = shift @ARGV;
-        $spec = "$ENV{'PWD'}/$spec" if ($spec !~ m!^/!);
+        $spec = abs_path($spec);
 
         push @specFiles, $spec;
 
-        addCommandLineOption("-s \"$spec\"");
+        addCommandLineOption("-s '$spec'");
 
     } elsif ($arg eq "-correct") {
         $mode = $step = "correct";
@@ -163,19 +175,26 @@ while (scalar(@ARGV)) {
         $mode = $step = "trim-assemble";
         addCommandLineOption("-trim-assemble");
 
+    } elsif ($arg eq "-readdir") {
+        $readdir = shift @ARGV;
+        addCommandLineOption("-readdir '$readdir'");
+
     } elsif (($arg eq "-pacbio-raw")       ||    #  File handling is also present in
              ($arg eq "-pacbio-corrected") ||    #  Defaults.pm around line 438
              ($arg eq "-nanopore-raw")     ||
              ($arg eq "-nanopore-corrected")) {
-        addCommandLineError("ERROR:  File '$ARGV[0]' not found.\n")   if (! -e $ARGV[0]);
 
-        while (-e $ARGV[0]) {
-            my $file = shift @ARGV;
+        my $file = $ARGV[0];
+        my $fopt = addSequenceFile($readdir, $file, 1);
 
-            $file = "$ENV{'PWD'}/$file"  if ($file !~ m!^/!);
+        while (defined($fopt)) {
+            push @inputFiles, "$arg\0$fopt";
+            addCommandLineOption("$arg '$fopt'");
 
-            push @inputFiles, "$arg\0$file";
-            addCommandLineOption("$arg \"$file\"");
+            shift @ARGV;
+
+            $file = $ARGV[0];
+            $fopt = addSequenceFile($readdir, $file);
         }
 
     } elsif (-e $arg) {
@@ -183,9 +202,10 @@ while (scalar(@ARGV)) {
 
     } elsif ($arg =~ m/=/) {
         push @specOpts, $arg;
-        addCommandLineOption("\"$arg\"");
+        addCommandLineOption("'$arg'");
 
     } else {
+        print STDERR "INVALID $arg\n";
         addCommandLineError("ERROR:  Invalid command line option '$arg'.  Did you forget quotes around options with spaces?\n");
     }
 }
@@ -193,24 +213,23 @@ while (scalar(@ARGV)) {
 #  Fail if some obvious things aren't set.
 
 addCommandLineError("ERROR:  Assembly name prefix not supplied with -p.\n")   if (!defined($asm));
-addCommandLineError("ERROR:  Directory not supplied with -d.\n")              if (!defined($wrk));
 
 #  If the mode isn't set - which is allowed only if a gkpStore exists somewhere - be a little smart
 #  and figure out which store exists.
 
-$mode = "run"            if (!defined($mode) && (-d "$wrk/correction/$asm.gkpStore"));
-$mode = "trim-assemble"  if (!defined($mode) && (-d "$wrk/trimming/$asm.gkpStore"));
-$mode = "assemble"       if (!defined($mode) && (-d "$wrk/unitigging/$asm.gkpStore"));
+$mode = "run"            if (!defined($mode) && (-d "correction/$asm.gkpStore"));
+$mode = "trim-assemble"  if (!defined($mode) && (-d "trimming/$asm.gkpStore"));
+$mode = "assemble"       if (!defined($mode) && (-d "unitigging/$asm.gkpStore"));
 
 #  Load paramters from the defaults files
 
-@inputFiles = setParametersFromFile("$bin/canu.defaults",   @inputFiles)   if (-e "$bin/canu.defaults");
-@inputFiles = setParametersFromFile("$ENV{'HOME'}/.canu",   @inputFiles)   if (-e "$ENV{'HOME'}/.canu");
+@inputFiles = setParametersFromFile("$bin/canu.defaults", $readdir, @inputFiles)   if (-e "$bin/canu.defaults");
+@inputFiles = setParametersFromFile("$ENV{'HOME'}/.canu", $readdir, @inputFiles)   if (-e "$ENV{'HOME'}/.canu");
 
 #  For each of the spec files, parse it, setting parameters and remembering any input files discovered.
 
 foreach my $specFile (@specFiles) {
-    @inputFiles = setParametersFromFile($specFile, @inputFiles);
+    @inputFiles = setParametersFromFile($specFile, $readdir, @inputFiles);
 }
 
 #  Set parameters from the command line.
@@ -219,64 +238,77 @@ setParametersFromCommandLine(@specOpts);
 
 #  Set parameters based on file types supplied.
 
+my $setUpForPacBio   = 0;
+my $setUpForNanopore = 0;
+
 foreach my $typefile (@inputFiles) {
     my ($type, $file) = split '\0', $typefile;
 
-    $mode = "trim-assemble"             if (!defined($mode) && ($type =~ m/corrected/));
-    $mode = "run"                       if (!defined($mode) && ($type =~ m/raw/));
+    $mode = "trim-assemble"  if (!defined($mode) && ($type =~ m/corrected/));
+    $mode = "run"            if (!defined($mode) && ($type =~ m/raw/));
 
-    $haveCorrected = 1                  if ($type =~ m/corrected/);
-    $haveRaw = 1                        if ($type =~ m/raw/);
+    $haveCorrected = 1       if ($type =~ m/corrected/);
+    $haveRaw = 1             if ($type =~ m/raw/);
 
-    setErrorRate(0.015, 0)              if ($type =~ m/pacbio/);
-    setGlobal("corErrorRate", "0.30")   if ($type =~ m/pacbio/);
-
-    setErrorRate(0.048, 0)              if ($type =~ m/nanopore/);
-    setGlobal("corErrorRate", "0.50")   if ($type =~ m/nanopore/);
+    $setUpForPacBio++        if ($type =~ m/pacbio/);
+    $setUpForNanopore++      if ($type =~ m/nanopore/);
 }
 
 #  Fail if both raw and corrected are supplied.
 
 addCommandLineError("ERROR:  Canu does not currently support mixing raw and corrected sequences.\n")   if ($haveRaw && $haveCorrected);
 
+#  If anything complained (invalid option, missing file, etc) printHelp() will trigger and exit.
+
+printHelp();
+
 #  When resuming a run without input files, set the error rates based on library type in the
-#  gkpStore.  If the user set the error rate already, do nothing.
-#
-#  Also, check if we have gkpStores but no input files and reset error rates based on gkpStore.
+#  gkpStore.
 
-if (scalar(@inputFiles) == 0 && ! defined(getGlobal("errorRate"))) {
+if (scalar(@inputFiles) == 0) {
     my $gkpStore = undef;
-    $gkpStore = "$wrk/correction/$asm.gkpStore" if -e "$wrk/correction/$asm.gkpStore/libraries.txt";
-    $gkpStore = "$wrk/trimming/$asm.gkpStore"   if -e "$wrk/trimming/$asm.gkpStore/libraries.txt";
-    $gkpStore = "$wrk/unitigging/$asm.gkpStore" if -e "$wrk/unitigging/$asm.gkpStore/libraries.txt";
 
-    # set to the default if we can't find anything
-    if (!defined($gkpStore)) {
-        setErrorRate(0.01, 0);
-    } else {
-        my $numPacBioRaw         = 0;
-        my $numPacBioCorrected   = 0;
-        my $numNanoporeRaw       = 0;
-        my $numNanoporeCorrected = 0;
+    $gkpStore = "correction/$asm.gkpStore"   if (-e "correction/$asm.gkpStore/libraries.txt");
+    $gkpStore = "trimming/$asm.gkpStore"     if (-e "trimming/$asm.gkpStore/libraries.txt");
+    $gkpStore = "unitigging/$asm.gkpStore"   if (-e "unitigging/$asm.gkpStore/libraries.txt");
 
-        open(L, "< $gkpStore/libraries.txt") or caExit("can't open '$gkpStore/libraries.txt' for reading: $!", undef);
-        while (<L>) {
-            $numPacBioRaw++           if (m/pacbio-raw/);
-            $numPacBioCorrected++     if (m/pacbio-corrected/);
-            $numNanoporeRaw++         if (m/nanopore-raw/);
-            $numNanoporeCorrected++   if (m/nanopore-corrected/);
-        }
-        if ($numPacBioRaw > 0 || $numPacBioCorrected > 0) {
-            setErrorRate(0.015, 0);
-            setGlobal("corErrorRate", "0.30");
-            setGlobal("cnsMaxCoverage", 40);
-        }
-        if ($numNanoporeRaw > 0 || $numNanoporeCorrected > 0) {
-            setErrorRate(0.048, 0);
-            setGlobal("corErrorRate", "0.50");
-            setGlobal("cnsMaxCoverage", 40);
-        }
+    caExit("ERROR:  no reads supplied, and can't find any library information in gkpStore", undef)   if (!defined($gkpStore));
+
+    my $numPacBioRaw         = 0;
+    my $numPacBioCorrected   = 0;
+    my $numNanoporeRaw       = 0;
+    my $numNanoporeCorrected = 0;
+
+    open(L, "< $gkpStore/libraries.txt") or caExit("can't open '$gkpStore/libraries.txt' for reading: $!", undef);
+    while (<L>) {
+        $numPacBioRaw++           if (m/pacbio-raw/);
+        $numPacBioCorrected++     if (m/pacbio-corrected/);
+        $numNanoporeRaw++         if (m/nanopore-raw/);
+        $numNanoporeCorrected++   if (m/nanopore-corrected/);
     }
+
+    $setUpForPacBio++      if ($numPacBioRaw   + $numPacBioCorrected   > 0);
+    $setUpForNanopore++    if ($numNanoporeRaw + $numNanoporeCorrected > 0);
+}
+
+#  Now set error rates (if not set already) based on the dominant read type.
+
+if ($setUpForNanopore > 0) {
+    setGlobalIfUndef("corOvlErrorRate",  0.320);
+    setGlobalIfUndef("obtOvlErrorRate",  0.144);
+    setGlobalIfUndef("utgOvlErrorRate",  0.144);
+    setGlobalIfUndef("corErrorRate",     0.500);
+    setGlobalIfUndef("obtErrorRate",     0.144);
+    setGlobalIfUndef("utgErrorRate",     0.144);
+    setGlobalIfUndef("cnsErrorRate",     0.144);
+} else {
+    setGlobalIfUndef("corOvlErrorRate",  0.240);
+    setGlobalIfUndef("obtOvlErrorRate",  0.045);
+    setGlobalIfUndef("utgOvlErrorRate",  0.045);
+    setGlobalIfUndef("corErrorRate",     0.300);
+    setGlobalIfUndef("obtErrorRate",     0.045);
+    setGlobalIfUndef("utgErrorRate",     0.045);
+    setGlobalIfUndef("cnsErrorRate",     0.045);
 }
 
 #  Finish setting parameters, then reset the bin directory using pathMap.
@@ -292,7 +324,7 @@ printHelp();
 #  Now that we know the bin directory, print the version so those pesky users
 #  will (hopefully) include it when they paste in logs.
 
-printVersion($bin);
+print "-- " . getGlobal("version") . "\n";
 
 #  Check java and gnuplot.
 
@@ -309,11 +341,14 @@ printHelp();
 #  when there isn't a grid.
 
 print STDERR "-- Detected ", getNumberOfCPUs(), " CPUs and ", getPhysicalMemorySize(), " gigabytes of memory.\n";
+print STDERR "-- Limited to ", getGlobal("maxMemory"), " gigabytes from maxMemory option.\n"  if (defined(getGlobal("maxMemory")));
+print STDERR "-- Limited to ", getGlobal("maxThreads"), " CPUs from maxThreads option.\n"     if (defined(getGlobal("maxThreads")));
 
 detectSGE();
 detectSlurm();
 detectPBSTorque();
 detectLSF();
+detectDNANexus();
 
 #  Report if no grid engine found, or if the user has disabled grid support.
 
@@ -334,17 +369,56 @@ configureSlurm();
 configurePBSTorque();
 configureLSF();
 configureRemote();
+configureDNANexus();
 
-#  Based on genomeSize, configure the execution of every component.  This needs to be done AFTER the grid is setup!
+#  Based on genomeSize, configure the execution of every component.
+#  This needs to be done AFTER the grid is setup!
 
 configureAssembler();
+
+#  And, finally, move to the assembly directory, finish setting things up, and report the critical
+#  parameters.
+
+setWorkDirectory();
+
+if (defined($rootdir)) {
+    make_path($rootdir)  if (! -d $rootdir);
+    chdir($rootdir);
+}
+
+setGlobal("onExitDir", getcwd());
+setGlobal("onExitNam", $asm);
+
+setGlobalIfUndef("objectStoreNameSpace", $asm);   #  No good place to put this.
+
+printf STDERR "--\n";
+printf STDERR "-- Generating assembly '$asm' in '" . getcwd() . "'\n";
+printf STDERR "--\n";
+printf STDERR "-- Parameters:\n";
+printf STDERR "--\n";
+printf STDERR "--  genomeSize        %s\n", getGlobal("genomeSize");
+printf STDERR "--\n";
+printf STDERR "--  Overlap Generation Limits:\n";
+printf STDERR "--    corOvlErrorRate %6.4f (%6.2f%%)\n", getGlobal("corOvlErrorRate"), getGlobal("corOvlErrorRate") * 100.0;
+printf STDERR "--    obtOvlErrorRate %6.4f (%6.2f%%)\n", getGlobal("obtOvlErrorRate"), getGlobal("obtOvlErrorRate") * 100.0;
+printf STDERR "--    utgOvlErrorRate %6.4f (%6.2f%%)\n", getGlobal("utgOvlErrorRate"), getGlobal("utgOvlErrorRate") * 100.0;
+printf STDERR "--\n";
+printf STDERR "--  Overlap Processing Limits:\n";
+printf STDERR "--    corErrorRate    %6.4f (%6.2f%%)\n", getGlobal("corErrorRate"), getGlobal("corErrorRate") * 100.0;
+printf STDERR "--    obtErrorRate    %6.4f (%6.2f%%)\n", getGlobal("obtErrorRate"), getGlobal("obtErrorRate") * 100.0;
+printf STDERR "--    utgErrorRate    %6.4f (%6.2f%%)\n", getGlobal("utgErrorRate"), getGlobal("utgErrorRate") * 100.0;
+printf STDERR "--    cnsErrorRate    %6.4f (%6.2f%%)\n", getGlobal("cnsErrorRate"), getGlobal("cnsErrorRate") * 100.0;
+
+if (defined(getGlobal('errorRateUsed'))) {
+    print STDERR getGlobal('errorRateUsed');
+}
 
 #  Fail immediately if we run the script on the grid, and the gkpStore directory doesn't exist and
 #  we have no input files.  Without this check we'd fail only after being scheduled on the grid.
 
-my $cor = (-e "$wrk/correction/$asm.gkpStore") || sequenceFileExists("$wrk/$asm.correctedReads") || (-e "$wrk/$asm.correctedReads.gkp");
-my $obt = (-e "$wrk/trimming/$asm.gkpStore")   || sequenceFileExists("$wrk/$asm.trimmedReads")   || (-e "$wrk/$asm.trimmedReads.gkp");
-my $utg = (-e "$wrk/unitigging/$asm.gkpStore");
+my $cor = (-e "correction/$asm.gkpStore") || fileExists("correction/$asm.gkpStore.tar") || sequenceFileExists("$asm.correctedReads") || (-e "$asm.correctedReads.gkp");
+my $obt = (-e "trimming/$asm.gkpStore")   || fileExists("trimming/$asm.gkpStore.tar")   || sequenceFileExists("$asm.trimmedReads")   || (-e "$asm.trimmedReads.gkp");
+my $utg = (-e "unitigging/$asm.gkpStore") || fileExists("unitigging/$asm.gkpStore.tar");
 
 if (($cor + $obt + $utg == 0) &&
     (scalar(@inputFiles) == 0)) {
@@ -353,26 +427,21 @@ if (($cor + $obt + $utg == 0) &&
 
 #  Check that we were supplied a work directory, and that it exists, or we can create it.
 
-caExit("no run directory (-d option) specified", undef)  if (!defined($wrk));
-
-make_path("$wrk")               if (! -d "$wrk");
-make_path("$wrk/canu-logs")     if (! -d "$wrk/canu-logs");
-make_path("$wrk/canu-scripts")  if (! -d "$wrk/canu-scripts");
-
-caExit("run directory (-d option) '$wrk' doesn't exist and couldn't be created", undef)  if (! -d $wrk);
+make_path("canu-logs")     if (! -d "canu-logs");
+make_path("canu-scripts")  if (! -d "canu-scripts");
 
 #  This environment variable tells the binaries to log their execution in canu-logs/
 
-$ENV{'CANU_DIRECTORY'} = $wrk;
+$ENV{'CANU_DIRECTORY'} = getcwd();
 
 #  Report the parameters used.
 
-writeLog($wrk);
+writeLog();
 
 #  Submit ourself for grid execution?  If not grid enabled, or already running on the grid, this
 #  call just returns.  The arg MUST be undef.
 
-submitScript($wrk, $asm, undef);
+submitScript($asm, undef);
 
 #
 #  When doing 'run', this sets options for each stage.
@@ -400,9 +469,9 @@ sub setOptions ($$) {
 
     #  Create directories for the step, if needed.
 
-    make_path("$wrk/correction")  if ((! -d "$wrk/correction") && ($step eq "correct"));
-    make_path("$wrk/trimming")    if ((! -d "$wrk/trimming")   && ($step eq "trim"));
-    make_path("$wrk/unitigging")  if ((! -d "$wrk/unitigging") && ($step eq "assemble"));
+    make_path("correction")  if ((! -d "correction") && ($step eq "correct"));
+    make_path("trimming")    if ((! -d "trimming")   && ($step eq "trim"));
+    make_path("unitigging")  if ((! -d "unitigging") && ($step eq "assemble"));
 
     #  Return that we want to run this step.
 
@@ -413,8 +482,7 @@ sub setOptions ($$) {
 #  Pipeline piece
 #
 
-sub overlap ($$$) {
-    my $wrk  = shift @_;
+sub overlap ($$) {
     my $asm  = shift @_;
     my $tag  = shift @_;
 
@@ -423,20 +491,20 @@ sub overlap ($$$) {
     print STDOUT "wrk: $wrk, asm: $asm, tag: $tag";
 
     if (getGlobal("${tag}overlapper") eq "mhap") {
-        mhapConfigure($wrk, $asm, $tag, $ovlType);
+        mhapConfigure($asm, $tag, $ovlType);
 
-        mhapPrecomputeCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+        mhapPrecomputeCheck($asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
         #  this also does mhapReAlign
 
-        mhapCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+        mhapCheck($asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-    } elsif (getGlobal("${tag}overlapper") eq "minimap") {
-        mmapConfigure($wrk, $asm, $tag, $ovlType);
+   } elsif (getGlobal("${tag}overlapper") eq "minimap") {
+        mmapConfigure($asm, $tag, $ovlType);
 
-        mmapPrecomputeCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+        mmapPrecomputeCheck($asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-        mmapCheck($wrk, $asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
+        mmapCheck($asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
 
     } elsif (getGlobal("${tag}overlapper") eq "minialign") {
         malnConfigure($wrk, $asm, $tag, $ovlType);
@@ -446,54 +514,52 @@ sub overlap ($$$) {
         malnCheck($wrk, $asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
 
     } else {
-        overlapConfigure($wrk, $asm, $tag, $ovlType);
+        overlapConfigure($asm, $tag, $ovlType);
 
-        overlapCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+        overlapCheck($asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
     }
 
-    createOverlapStore($wrk, $asm, $tag, getGlobal("ovsMethod"));
+    createOverlapStore($asm, $tag, getGlobal("ovsMethod"));
 }
 
 #
 #  Begin pipeline
 #
-
-if (getGlobal("canuIteration") > 0) {
-    print STDERR "--\n";
-    print STDERR "-- This is canu parallel iteration #" . getGlobal("canuIteration") . ", out of a maximum of " . getGlobal("canuIterationMax") . " attempts.\n";
-}
-
-print STDERR "--\n";
-print STDERR "-- Final error rates before starting pipeline:\n";
-
-showErrorRates("--   ");
+#  The checks for sequenceFileExists() at the start aren't needed except for
+#  object storage mode.  Gatekeeper has no way of knowing, inside
+#  gatekeeper(), that this stage is completed and it shouldn't fetch the
+#  store.  In 'normal' operation, the store exists already, and we just
+#  return.
+#
 
 print STDOUT "wrk: $wrk, asm: $asm";
 if (setOptions($mode, "correct") eq "correct") {
-    print STDERR "--\n";
-    print STDERR "--\n";
-    print STDERR "-- BEGIN CORRECTION\n";
-    print STDERR "--\n";
+    if (sequenceFileExists("$asm.correctedReads") eq undef) {
+        print STDERR "--\n";
+        print STDERR "--\n";
+        print STDERR "-- BEGIN CORRECTION\n";
+        print STDERR "--\n";
 
-    gatekeeper($wrk, $asm, "cor", @inputFiles);
+        gatekeeper($asm, "cor", @inputFiles);
 
-    merylConfigure($wrk, $asm, "cor");
-    merylCheck($wrk, $asm, "cor")  foreach (1..getGlobal("canuIterationMax") + 1);
-    merylProcess($wrk, $asm, "cor");
+        merylConfigure($asm, "cor");
+        merylCheck($asm, "cor")  foreach (1..getGlobal("canuIterationMax") + 1);
+        merylProcess($asm, "cor");
 
-    overlap($wrk, $asm, "cor");
+        overlap($asm, "cor");
 
-    buildCorrectionLayouts($wrk, $asm);
-    generateCorrectedReads($wrk, $asm)  foreach (1..getGlobal("canuIterationMax") + 1);
-    dumpCorrectedReads($wrk, $asm);
+        buildCorrectionLayouts($asm);
+        generateCorrectedReads($asm)  foreach (1..getGlobal("canuIterationMax") + 1);
+        dumpCorrectedReads($asm);
 
-    estimateCorrectedError($wrk, $asm, "cor");
+        estimateCorrectedError($asm, "cor");
 
-    buildHTML($wrk, $asm, "cor");
+        buildHTML($asm, "cor");
+    }
 
-    my $correctedReads = sequenceFileExists("$wrk/$asm.correctedReads");
+    my $correctedReads = sequenceFileExists("$asm.correctedReads");
 
-    caExit("can't find corrected reads in '$wrk/$asm.correctedReads*'", undef)  if (!defined($correctedReads));
+    caExit("can't find corrected reads '$asm.correctedReads*' in directory '" . getcwd() . "'", undef)  if (!defined($correctedReads));
 
     undef @inputFiles;
     push  @inputFiles, "-pacbio-corrected\0$correctedReads";
@@ -501,29 +567,31 @@ if (setOptions($mode, "correct") eq "correct") {
 
 
 if (setOptions($mode, "trim") eq "trim") {
-    print STDERR "--\n";
-    print STDERR "--\n";
-    print STDERR "-- BEGIN TRIMMING\n";
-    print STDERR "--\n";
+    if (sequenceFileExists("$asm.trimmedReads") eq undef) {
+        print STDERR "--\n";
+        print STDERR "--\n";
+        print STDERR "-- BEGIN TRIMMING\n";
+        print STDERR "--\n";
 
-    gatekeeper($wrk, $asm, "obt", @inputFiles);
+        gatekeeper($asm, "obt", @inputFiles);
 
-    merylConfigure($wrk, $asm, "obt");
-    merylCheck($wrk, $asm, "obt")  foreach (1..getGlobal("canuIterationMax") + 1);
-    merylProcess($wrk, $asm, "obt");
+        merylConfigure($asm, "obt");
+        merylCheck($asm, "obt")  foreach (1..getGlobal("canuIterationMax") + 1);
+        merylProcess($asm, "obt");
 
-    overlap($wrk, $asm, "obt");
+        overlap($asm, "obt");
 
-    trimReads ($wrk, $asm);
-    splitReads($wrk, $asm);
-    dumpReads ($wrk, $asm);
-    #summarizeReads($wrk, $asm);
+        trimReads ($asm);
+        splitReads($asm);
+        dumpReads ($asm);
+        #summarizeReads($asm);
 
-    buildHTML($wrk, $asm, "obt");
+        buildHTML($asm, "obt");
+    }
 
-    my $trimmedReads = sequenceFileExists("$wrk/$asm.trimmedReads");
+    my $trimmedReads = sequenceFileExists("$asm.trimmedReads");
 
-    caExit("can't find trimmed reads in '$wrk/$asm.trimmedReads*'", undef)  if (!defined($trimmedReads));
+    caExit("can't find trimmed reads '$asm.trimmedReads*' in directory '" . getcwd() . "'", undef)  if (!defined($trimmedReads));
 
     undef @inputFiles;
     push  @inputFiles, "-pacbio-corrected\0$trimmedReads";
@@ -531,39 +599,44 @@ if (setOptions($mode, "trim") eq "trim") {
 
 
 if (setOptions($mode, "assemble") eq "assemble") {
-    print STDERR "--\n";
-    print STDERR "--\n";
-    print STDERR "-- BEGIN ASSEMBLY\n";
-    print STDERR "--\n";
+    if (sequenceFileExists("$asm.contigs") eq undef) {
+        print STDERR "--\n";
+        print STDERR "--\n";
+        print STDERR "-- BEGIN ASSEMBLY\n";
+        print STDERR "--\n";
 
-    gatekeeper($wrk, $asm, "utg", @inputFiles);
+        gatekeeper($asm, "utg", @inputFiles);
 
-    merylConfigure($wrk, $asm, "utg");
-    merylCheck($wrk, $asm, "utg")  foreach (1..getGlobal("canuIterationMax") + 1);
-    merylProcess($wrk, $asm, "utg");
+        merylConfigure($asm, "utg");
+        merylCheck($asm, "utg")  foreach (1..getGlobal("canuIterationMax") + 1);
+        merylProcess($asm, "utg");
 
-    overlap($wrk, $asm, "utg");
+        overlap($asm, "utg");
 
-    #readErrorDetection($wrk, $asm);
+        #readErrorDetection($asm);
 
-    readErrorDetectionConfigure($wrk, $asm);
-    readErrorDetectionCheck($wrk, $asm)  foreach (1..getGlobal("canuIterationMax") + 1);
+        readErrorDetectionConfigure($asm);
+        readErrorDetectionCheck($asm)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-    overlapErrorAdjustmentConfigure($wrk, $asm);
-    overlapErrorAdjustmentCheck($wrk, $asm)  foreach (1..getGlobal("canuIterationMax") + 1);
+        overlapErrorAdjustmentConfigure($asm);
+        overlapErrorAdjustmentCheck($asm)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-    updateOverlapStore($wrk, $asm);
+        updateOverlapStore($asm);
 
-    unitig($wrk, $asm);
-    unitigCheck($wrk, $asm)  foreach (1..getGlobal("canuIterationMax") + 1);
+        unitig($asm);
+        unitigCheck($asm)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-    consensusConfigure($wrk, $asm);
-    consensusCheck($wrk, $asm)  foreach (1..getGlobal("canuIterationMax") + 1);
+        foreach (1..getGlobal("canuIterationMax") + 1) {   #  Consensus wants to change the script between the first and
+            consensusConfigure($asm);                      #  second iterations.  The script is rewritten in
+            consensusCheck($asm);                          #  consensusConfigure(), so we need to add that to the loop.
+        }
 
-    consensusLoad($wrk, $asm);
-    consensusAnalyze($wrk, $asm);
+        consensusLoad($asm);
+        consensusAnalyze($asm);
 
-    generateOutputs($wrk, $asm);
+        generateOutputs($asm);
+    }
 }
+
 
 exit(0);

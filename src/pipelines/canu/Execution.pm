@@ -55,19 +55,39 @@ package canu::Execution;
 require Exporter;
 
 @ISA    = qw(Exporter);
-@EXPORT = qw(stopBefore stopAfter skipStage emitStage touch getInstallDirectory getJobIDShellCode getLimitShellCode getBinDirectory getBinDirectoryShellCode submitScript submitOrRunParallelJob runCommand runCommandSilently findCommand findExecutable caExit caFailure);
+@EXPORT = qw(stopAfter
+             skipStage
+             emitStage
+             touch
+             getInstallDirectory
+             getJobIDShellCode
+             getLimitShellCode
+             getBinDirectory
+             getBinDirectoryShellCode
+             setWorkDirectory
+             setWorkDirectoryShellCode
+             submitScript
+             submitOrRunParallelJob
+             runCommand
+             runCommandSilently
+             findCommand
+             findExecutable
+             caExit
+             caFailure);
 
 use strict;
 use Config;            #  for @signame
 use Cwd qw(getcwd);
-use Carp qw(cluck);
+use Carp qw(longmess);
 
 use POSIX ":sys_wait_h";  #  For waitpid(..., &WNOHANG)
 use List::Util qw(min max);
-use File::Path qw(make_path remove_tree);
+use File::Path 2.08 qw(make_path remove_tree);
 use File::Spec;
 
 use canu::Defaults;
+use canu::Report   qw(generateReport);
+
 
 
 #
@@ -162,6 +182,10 @@ sub schedulerFinish ($) {
     print STDERR "-- Starting concurrent execution on ", scalar(localtime()), " with $diskfree GB free disk space ($remain processes; $numberOfProcesses concurrently)\n"  if  (defined($dir));
     print STDERR "-- Starting concurrent execution on ", scalar(localtime()), " ($remain processes; $numberOfProcesses concurrently)\n"                                    if (!defined($dir));
     print STDERR "\n";
+    print STDERR "    cd $dir\n";
+
+    my $cwd = getcwd();  #  Remember where we are.
+    chdir($dir);        #  So we can root the jobs in the correct location.
 
     #  Run all submitted jobs
     #
@@ -187,6 +211,8 @@ sub schedulerFinish ($) {
     while (scalar(@processesRunning) > $numberOfProcessesToWait) {
         waitpid(shift @processesRunning, 0);
     }
+
+    chdir($cwd);
 
     $diskfree = (defined($dir)) ? (diskSpace($dir)) : (0);
 
@@ -220,23 +246,6 @@ sub touch ($@) {
 #  State management
 #
 
-sub stopBefore ($$) {
-    my $stopBefore = shift @_;
-    my $cmd        = shift @_;
-
-    $stopBefore =~ tr/A-Z/a-z/;
-
-    if ((defined($stopBefore)) &&
-        (defined(getGlobal("stopBefore"))) &&
-        (getGlobal("stopBefore") eq $stopBefore)) {
-        print STDERR "\n";
-        print STDERR "Stop requested before '$stopBefore'.\n";
-        print STDERR "\n";
-        print STDERR "Command:\n  $cmd\n" if (defined($cmd));
-        exit(0);
-    }
-}
-
 sub stopAfter ($) {
     my $stopAfter = shift @_;
 
@@ -251,12 +260,21 @@ sub stopAfter ($) {
 }
 
 
-sub emitStage ($$$@) {
-    return;
+sub emitStage ($$@) {
+    my $asm     = shift @_;
+    my $stage   = shift @_;
+    my $attempt = shift @_;
+
+    generateReport($asm);
+
+    if (!defined($attempt)) {
+        print STDERR "-- Finished stage '$stage', reset canuIteration.\n";
+        setGlobal("canuIteration", 0);
+    }
 }
 
 
-sub skipStage ($$$@) {
+sub skipStage ($$@) {
     return(0);
 }
 
@@ -447,6 +465,64 @@ sub getBinDirectoryShellCode () {
 
 
 
+#
+#  If running on a cloud system, shell scripts are started in some random location.
+#  setWorkDirectory() will create the directory the script is supposed to run in (e.g.,
+#  correction/0-mercounts) and move into it.  This will keep the scripts compatible with the way
+#  they are run from within canu.pl.
+#
+#  If you're fine running in 'some random location' do nothing here.
+#
+#  Note that canu does minimal cleanup.
+#
+
+sub setWorkDirectory () {
+
+    if    ((getGlobal("objectStore") eq "TEST") && (defined($ENV{"JOB_ID"}))) {
+        my $jid = $ENV{'JOB_ID'};
+        my $tid = $ENV{'SGE_TASK_ID'};
+
+        make_path("/assembly/COMPUTE/job-$jid-$tid");
+        chdir    ("/assembly/COMPUTE/job-$jid-$tid");
+    }
+
+    elsif (getGlobal("objectStore") eq "DNANEXUS") {
+    }
+
+    elsif (getGlobal("gridEngine") eq "PBSPRO") {
+        chdir($ENV{"PBS_O_WORKDIR"})   if (exists($ENV{"PBS_O_WORKDIR"}));
+    }
+}
+
+
+
+sub setWorkDirectoryShellCode ($) {
+    my $path = shift @_;
+    my $code = "";
+
+    if    (getGlobal("objectStore") eq "TEST") {
+        $code .= "if [ z\$SGE_TASK_ID != z ] ; then\n";
+        $code .= "  jid=\$JOB_ID\n";
+        $code .= "  tid=\$SGE_TASK_ID\n";
+        $code .= "  mkdir -p /assembly/COMPUTE/job-\$jid-\$tid/$path\n";
+        $code .= "  cd       /assembly/COMPUTE/job-\$jid-\$tid/$path\n";
+        $code .= "  echo IN  /assembly/COMPUTE/job-\$jid-\$tid/$path\n";
+        $code .= "fi\n";
+    }
+    elsif (getGlobal("objectStore") eq "DNANEXUS") {
+        #  You're probably fine running in some random location, but if there is faster disk
+        #  available, move there.
+    }
+    elsif (getGlobal("gridEngine") eq "PBSPRO") {
+        $code .= "if [ z\$PBS_O_WORKDIR != z ] ; then\n";
+        $code .= "  cd \$PBS_O_WORKDIR\n";
+        $code .= "fi\n";
+    }
+
+    return($code);
+}
+
+
 
 #  Spend too much effort ensuring that the name is unique in the system.  For 'canu' jobs, we don't
 #  care.
@@ -498,6 +574,9 @@ sub makeUniqueJobName ($$) {
     if (uc(getGlobal("gridEngine")) eq "LSF") {
     }
 
+    if (uc(getGlobal("gridEngine")) eq "DNANEXUS") {
+    }
+
     #  If the jobName doesn't exist, we can use it.
 
     return($jobName)  if (! exists($jobs{$jobName}));
@@ -526,36 +605,34 @@ sub makeUniqueJobName ($$) {
 #  The previous version (CA) would use "gridPropagateHold" to reset holds on existing jobs so that
 #  they would also hold on this job.
 #
-sub submitScript ($$$) {
-    my $wrk         = shift @_;
+sub submitScript ($$) {
     my $asm         = shift @_;
-    my $jobToWaitOn = shift @_;
+    my $jobHold     = shift @_;
 
     return   if (getGlobal("useGrid")       ne "1");      #  If not requested to run on the grid,
     return   if (getGlobal("gridEngine")    eq undef);    #  or can't run on the grid, don't run on the grid.
 
-    #  If no job to wait on, and we are already on the grid, do NOT resubmit ourself.
+    #  If no job hold, and we are already on the grid, do NOT resubmit ourself.
     #
     #  When the user launches canu on the head node, a call to submitScript() is made to launch canu
     #  under grid control.  That results in a restart of canu, and another call to submitScript(),
     #  but this time, the envorinment variable is set, we we can skip the resubmission, and continue
     #  with canu execution.
 
-    return   if (($jobToWaitOn eq undef) && (exists($ENV{getGlobal("gridEngineJobID")})));
+    return   if (($jobHold eq undef) && (exists($ENV{getGlobal("gridEngineJobID")})));
 
     #  Find the next available output file.
 
-    make_path("$wrk/canu-scripts")  if (! -d "$wrk/canu-scripts");  #  Done in canu.pl, just being paranoid
+    make_path("canu-scripts")  if (! -d "canu-scripts");  #  Done in canu.pl, just being paranoid
 
     my $idx = "01";
 
-    while (-e "$wrk/canu-scripts/canu.$idx.out") {
+    while (-e "canu-scripts/canu.$idx.out") {
         $idx++;
     }
 
-    my $output    = "$wrk/canu-scripts/canu.$idx.out";
-    my $script    = "$wrk/canu-scripts/canu.$idx.sh";
-    my $iteration = getGlobal("canuIteration");
+    my $outName   = "canu-scripts/canu.$idx.out";
+    my $script    = "canu-scripts/canu.$idx.sh";
 
     #  Make a script for us to submit.
 
@@ -577,8 +654,13 @@ sub submitScript ($$$) {
     print F "\n";
     print F getBinDirectoryShellCode();
     print F "\n";
+    print F setWorkDirectoryShellCode(".");
+    print F "\n";
+    print F "rm -f canu.out\n";
+    print F "ln -s canu-scripts/canu.$idx.out canu.out\n";
+    print F "\n";
     print F "/usr/bin/env perl \\\n";
-    print F "\$bin/canu " . getCommandLineOptions() . " canuIteration=$iteration\n";
+    print F "\$bin/canu " . getCommandLineOptions() . " canuIteration=" . getGlobal("canuIteration") . "\n";
     close(F);
 
     system("chmod +x $script");
@@ -604,7 +686,9 @@ sub submitScript ($$$) {
     $memOption = buildMemoryOption($mem, 1);
     $thrOption = buildThreadOption($thr);
 
-    $gridOpts  = $memOption                           if (defined($memOption));
+    $gridOpts  = $jobHold;
+    $gridOpts .= " "                                  if (defined($gridOpts));
+    $gridOpts .= $memOption                           if (defined($memOption));
     $gridOpts .= " "                                  if (defined($gridOpts));
     $gridOpts .= $thrOption                           if (defined($thrOption));
     $gridOpts .= " "                                  if (defined($gridOpts));
@@ -612,70 +696,19 @@ sub submitScript ($$$) {
     $gridOpts .= " "                                  if (defined($gridOpts));
     $gridOpts .= getGlobal("gridOptionsExecutive")    if (defined(getGlobal("gridOptionsExecutive")));
 
-    #  If the jobToWaitOn is defined, make the script wait for that to complete.  LSF might need to
-    #  query jobs in the queue and figure out the job ID (or IDs) for the jobToWaitOn.  Reading LSF
-    #  docs online (for bsub.1) claim that we can still use jobToWaitOn.
-
-    if (defined($jobToWaitOn)) {
-        my $hold = getGlobal("gridEngineHoldOption");
-
-        # most grid engines don't understand job names to hold on, only IDs
-        if ((uc(getGlobal("gridEngine")) eq "PBS") ||
-            (uc(getGlobal("gridEngine")) eq "PBSPRO") ||
-            (uc(getGlobal("gridEngine")) eq "SLURM")){
-           my $tcmd = getGlobal("gridEngineNameToJobIDCommand");
-           $tcmd =~ s/WAIT_TAG/$jobToWaitOn/g;
-           my $propJobCount = `$tcmd |wc -l`;
-           chomp $propJobCount;
-           if ($propJobCount == 0) {
-              $tcmd = getGlobal("gridEngineNameToJobIDCommandNoArray");
-              $tcmd =~ s/WAIT_TAG/$jobToWaitOn/g;
-              $hold = getGlobal("gridEngineHoldOptionNoArray");
-              $propJobCount = `$tcmd |wc -l`;
-           }
-           if ($propJobCount != 1) {
-              print STDERR "Warning: multiple IDs for job $jobToWaitOn got $propJobCount and should have been 1.\n";
-           }
-           my $jobID = undef;
-           open(F,  "$tcmd |awk '{print \$1}' |");
-           while (<F>) {
-              chomp $_;
-              if (defined($jobID)) {
-                 $jobID = "$jobID:$_";
-              } else {
-                 $jobID = $_;
-              }
-           }
-           close(F);
-           $hold =~ s/WAIT_TAG/$jobID/g;
-        } else {
-           $hold =~ s/WAIT_TAG/$jobToWaitOn/;
-        }
-        $gridOpts .= " " . $hold;
-    }
-
-
     my $submitCommand        = getGlobal("gridEngineSubmitCommand");
     my $nameOption           = getGlobal("gridEngineNameOption");
     my $outputOption         = getGlobal("gridEngineOutputOption");
 
-    my $qcmd = "$submitCommand $gridOpts $nameOption \"$jobName\" $outputOption $output $script";
+    my $qcmd = "$submitCommand $gridOpts $nameOption '$jobName' $outputOption $outName $script";
 
-    runCommand($wrk, $qcmd) and caFailure("Failed to submit script", undef);
+    runCommand(getcwd(), $qcmd) and caFailure("Failed to submit script", undef);
 
     exit(0);
 }
 
 
 
-
-
-
-#  Expects
-#    job name
-#    number of jobs
-#    global pattern for option
-#
 sub buildGridArray ($$$$) {
     my ($name, $bgn, $end, $opt) = @_;
     my  $off = 0;
@@ -715,19 +748,54 @@ sub buildGridArray ($$$$) {
 }
 
 
-
 sub buildOutputName ($$$) {
     my $path   = shift @_;
     my $script = shift @_;
-    my $tid    = shift @_;
+    my $tid    = substr("000000" . (shift @_), -6);
+    my $o;
 
-    my $outName = "$path/$script.$tid.out";
+    #  When this function is called, canu.pl is running in the assembly directory.
+    #  But, when the script is executed, it is rooted in '$path'.  To get the
+    #  'logs' working, we need to check if the directory relative to the assembly root exists,
+    #  but set it relative to $path (which is also where $script is relative to).
 
-    if ((-e "$path/logs") && ($script =~ m/scripts\/(.*)/)) {
-        $outName = "$path/logs/$1.$tid.out";
+    $o = "$script.$tid.out";
+    $o = "logs/$1.$tid.out"   if ((-e "$path/logs") && ($script =~ m/scripts\/(.*)/));
+
+    return($o);
+}
+
+
+sub buildOutputOption ($$) {
+    my $path   = shift @_;
+    my $script = shift @_;
+    my $tid    = getGlobal("gridEngineArraySubmitID");
+    my $opt    = getGlobal("gridEngineOutputOption");
+
+    if (defined($tid) && defined($opt)) {
+        my $o;
+
+        $o = "$script.$tid.out";
+        $o = "logs/$1.$tid.out"   if ((-e "$path/logs") && ($script =~ m/scripts\/(.*)/));
+
+        return("$opt $o");
     }
 
-    return($outName);
+    return(undef);
+}
+
+
+sub buildStageOption ($$) {
+    my $t = shift @_;
+    my $d = shift @_;
+    my $r;
+
+    if ($t eq "cor") {
+        $r =  getGlobal("gridEngineStageOption");
+        $r =~ s/DISK_SPACE/${d}/g;
+    }
+
+    return($r);
 }
 
 
@@ -776,13 +844,14 @@ sub buildThreadOption ($) {
 }
 
 
-sub buildGridJob ($$$$$$$$) {
+sub buildGridJob ($$$$$$$$$) {
     my $asm     = shift @_;
     my $jobType = shift @_;
     my $path    = shift @_;
     my $script  = shift @_;
     my $mem     = shift @_;
     my $thr     = shift @_;
+    my $dsk     = shift @_;
     my $bgnJob  = shift @_;
     my $endJob  = shift @_;
 
@@ -807,41 +876,43 @@ sub buildGridJob ($$$$$$$$) {
     my ($jobName,  $jobOff)    = buildGridArray($jobNameT, $bgnJob, $endJob, getGlobal("gridEngineArrayName"));
     my ($arrayOpt, $arrayOff)  = buildGridArray($jobNameT, $bgnJob, $endJob, getGlobal("gridEngineArrayOption"));
 
-    my $outputOption           = getGlobal("gridEngineOutputOption");
-    my $outName                = buildOutputName($path, $script, getGlobal("gridEngineArraySubmitID"));
+    my $outputOption           = buildOutputOption($path, $script);
 
+    my $stageOption            = buildStageOption($jobType, $dsk);
     my $memOption              = buildMemoryOption($mem, $thr);
     my $thrOption              = buildThreadOption($thr);
+    my $globalOptions          = getGlobal("gridOptions");
+    my $jobOptions             = getGlobal("gridOptions$jobType");
 
-    my $gridOpts;
+    my $opts;
 
-    $gridOpts  = getGlobal("gridOptions")          if (defined(getGlobal("gridOptions")));
-    $gridOpts .= " "                               if (defined($gridOpts));
-    $gridOpts .= getGlobal("gridOptions$jobType")  if (defined(getGlobal("gridOptions$jobType")));
-    $gridOpts .= " "                               if (defined($gridOpts));
-    $gridOpts .= $memOption                        if (defined($memOption));
-    $gridOpts .= " "                               if (defined($gridOpts));
-    $gridOpts .= $thrOption                        if (defined($thrOption));
+    $opts  = "$stageOption "    if (defined($stageOption));
+    $opts .= "$memOption "      if (defined($memOption));
+    $opts .= "$thrOption "      if (defined($thrOption));
+    $opts .= "$globalOptions "  if (defined($globalOptions));
+    $opts .= "$jobOptions "     if (defined($jobOptions));
+    $opts .= "$outputOption "   if (defined($outputOption));
+    $opts =~ s/\s+$//;
 
-    #  Build the command line.
+    #  Build and save the command line.  Return the command PREFIX (we'll be adding .sh and .out as
+    #  appropriate), and the job name it will be submitted with (which isn't expected to be used).
 
     my $cmd;
-    $cmd  = "  $submitCommand \\\n";
-    $cmd .= "    $gridOpts \\\n"  if (defined($gridOpts));
-    $cmd .= "    $nameOption \"$jobName\" \\\n";
-    $cmd .= "    $arrayOpt \\\n";
-    $cmd .= "    $outputOption $outName \\\n";
-    $cmd .= "    $path/$script.sh $arrayOff\n";
-
-    #  Save it, just because.
 
     open(F, "> $path/$script.jobSubmit.sh") or die;
-    print F $cmd;
+    print F "#!/bin/sh\n";
+    print F "\n";
+    print F "$submitCommand \\\n";
+    print F "  $opts \\\n"  if (defined($opts));
+    print F "  $nameOption \"$jobName\" \\\n";
+    print F "  $arrayOpt \\\n";
+    print F "  ./$script.sh $arrayOff \\\n";
+    print F "> ./$script.jobSubmit.out 2>&1\n";
     close(F);
 
-    #  Return the command and the job name it will be submitted with.
+    chmod 0755, "$path/$script.jobSubmit.sh";
 
-    return($cmd, $jobName);
+    return("$script.jobSubmit", $jobName);
 }
 
 
@@ -941,8 +1012,7 @@ sub convertToJobRange (@) {
 #
 #  If under grid control, submit grid jobs.  Otherwise, run in parallel locally.
 #
-sub submitOrRunParallelJob ($$$$$@) {
-    my $wrk          = shift @_;  #  Root of the assembly (NOT wrk/correction or wrk/trimming)
+sub submitOrRunParallelJob ($$$$@) {
     my $asm          = shift @_;  #  Name of the assembly
 
     my $jobType      = shift @_;  #  E.g., ovl, cns, ... - populates 'gridOptionsXXX
@@ -953,6 +1023,7 @@ sub submitOrRunParallelJob ($$$$$@) {
 
     my $mem          = getGlobal("${jobType}Memory");
     my $thr          = getGlobal("${jobType}Threads");
+    my $dsk          = getGlobal("${jobType}StageSpace");
 
     my @jobs         = convertToJobRange(@_);
 
@@ -965,10 +1036,6 @@ sub submitOrRunParallelJob ($$$$$@) {
     #my $t = localtime();
     #print STDERR "----------------------------------------GRIDSTART $t\n";
     #print STDERR "$path/$script.sh with $mem gigabytes memory and $thr threads.\n";
-
-    #  Check stopping rules.
-
-    stopBefore($jobType, "$path/$script.sh");
 
     #  Break infinite loops.  If the grid jobs keep failing, give up after a few attempts.
     #
@@ -985,8 +1052,27 @@ sub submitOrRunParallelJob ($$$$$@) {
     #  If the jobs succeed in Iteration 2, the canu in iteration 3 will pass the Check(), never call
     #  this function, and continue the pipeline.
 
-    caExit("canu iteration count too high, stopping pipeline (most likely a problem in the grid-based computes)", undef)
-        if (getGlobal("canuIteration") > getGlobal("canuIterationMax"));
+    my $iter = getGlobal("canuIteration");
+    my $max  = getGlobal("canuIterationMax");
+
+    if ($iter >= $max) {
+        caExit("canu iteration count too high, stopping pipeline (most likely a problem in the grid-based computes)", undef);
+    } elsif ($iter == 0) {
+        $iter = "First";
+    } elsif ($iter == 1) {
+        $iter = "Second";
+    } elsif ($iter == 2) {
+        $iter = "Third";
+    } elsif ($iter == 3) {
+        $iter = "Fourth";
+    } elsif ($iter == 4) {
+        $iter = "Fifth";
+    } else {
+        $iter = "${iter}th";
+    }
+
+    print STDERR "--\n";
+    print STDERR "-- Running jobs.  $iter attempt out of $max.\n";
 
     setGlobal("canuIteration", getGlobal("canuIteration") + 1);
 
@@ -1001,16 +1087,104 @@ sub submitOrRunParallelJob ($$$$$@) {
         (getGlobal("useGrid") eq "1") &&
         (getGlobal("useGrid$jobType") eq "1") &&
         (exists($ENV{getGlobal("gridEngineJobID")}))) {
-        my $cmd;
-        my $jobName;
+        my @jobsSubmitted;
+
+        print STDERR "--\n";
 
         foreach my $j (@jobs) {
-            ($cmd, $jobName) = buildGridJob($asm, $jobType, $path, $script, $mem, $thr, $j, undef);
+            my ($cmd, $jobName) = buildGridJob($asm, $jobType, $path, $script, $mem, $thr, $dsk, $j, undef);
 
-            runCommand($path, $cmd) and caFailure("Failed to submit batch jobs", undef);
+            runCommandSilently($path, "./$cmd.sh", 0) and caFailure("Failed to submit batch jobs", "$path/$cmd.out");
+
+            #  Parse the stdout/stderr from the submit command to find the id of the job
+            #  we just submitted.  We'll use this to hold the next iteration until all these
+            #  jobs have completed.
+
+            open(F, "< $path/$cmd.out");
+            while (<F>) {
+                chomp;
+
+                if (uc(getGlobal("gridEngine")) eq "SGE") {
+                    #  Your job 148364 ("canu_asm") has been submitted
+                    if (m/Your\sjob\s(\d+)\s/) {
+                        $jobName = $1;
+                    }
+                    #  Your job-array 148678.1500-1534:1 ("canu_asm") has been submitted
+                    if (m/Your\sjob-array\s(\d+).\d+-\d+:\d\s/) {
+                        $jobName = $1;
+                    }
+                }
+
+                if (uc(getGlobal("gridEngine")) eq "LSF") {
+                    #  Job <759810> is submitted to queue <14>.
+                    if (m/Job\s<(\d+)>\sis/) {
+                        $jobName = "ended($1)";
+                    }
+                }
+
+                if (uc(getGlobal("gridEngine")) eq "PBS") {
+                    #  123456.qm2
+                    $jobName = $_;
+                }
+
+                if (uc(getGlobal("gridEngine")) eq "PBSPRO") {
+                    #  ??
+                    $jobName = $_;
+                }
+
+                if (uc(getGlobal("gridEngine")) eq "SLURM") {
+                    if (m/Submitted\sbatch\sjob\s(\d+)/) {
+                        $jobName = $1;
+                    } else {
+                        $jobName = $_;
+                    }
+                }
+
+                if (uc(getGlobal("gridEngine")) eq "DNANEXUS") {
+                }
+            }
+            close(F);
+
+            if ($j =~ m/^\d+$/) {
+                print STDERR "-- '$cmd.sh' -> job $jobName task $j.\n";
+            } else {
+                print STDERR "-- '$cmd.sh' -> job $jobName tasks $j.\n";
+            }
+
+            push @jobsSubmitted, $jobName;
         }
 
-        submitScript($wrk, $asm, $jobName);
+        print STDERR "--\n";
+
+        #  All jobs submitted.  Make an option to hold the executive on those jobs.
+
+        my $jobHold;
+
+        if (uc(getGlobal("gridEngine")) eq "SGE") {
+            $jobHold = "-hold_jid " . join ",", @jobsSubmitted;
+        }
+
+        if (uc(getGlobal("gridEngine")) eq "LSF") {
+            $jobHold = "-w \"" . (join "&&", @jobsSubmitted) . "\"";
+        }
+
+        if (uc(getGlobal("gridEngine")) eq "PBS") {
+            $jobHold = "-W depend=afteranyarray:" . join ":", @jobsSubmitted;
+        }
+
+        if (uc(getGlobal("gridEngine")) eq "PBSPRO") {
+            $jobHold = "-W depend=afterany:" . join ":", @jobsSubmitted;
+        }
+
+        if (uc(getGlobal("gridEngine")) eq "SLURM") {
+            $jobHold = "--depend=afterany:" . join ":", @jobsSubmitted;
+        }
+
+        if (uc(getGlobal("gridEngine")) eq "DNANEXUS") {
+            $jobHold = "...whatever magic needed to hold the job until all jobs in @jobsSubmitted are done...";
+        }
+
+        submitScript($asm, $jobHold);
 
         #  submitScript() should never return.  If it does, then a parallel step was attempted too many time.
 
@@ -1024,25 +1198,24 @@ sub submitOrRunParallelJob ($$$$$@) {
         (getGlobal("useGrid$jobType") eq "1") &&
         (! exists($ENV{getGlobal("gridEngineJobID")}))) {
         print STDERR "\n";
-        print STDERR "Please submit the following jobs to the grid for execution using $mem gigabytes memory and $thr threads:\n";
+        print STDERR "Please run the following commands to submit jobs to the grid for execution using $mem gigabytes memory and $thr threads:\n";
         print STDERR "\n";
 
         foreach my $j (@jobs) {
-            my ($cmd, $jobName) = buildGridJob($asm, $jobType, $path, $script, $mem, $thr, $j, undef);
+            my  $cwd = getcwd();
+            my ($cmd, $jobName) = buildGridJob($asm, $jobType, $path, $script, $mem, $thr, $dsk, $j, undef);
 
-            print $cmd;
+            print "  $cwd/$path/$cmd.sh\n";
         }
 
         print STDERR "\n";
         print STDERR "When all jobs complete, restart canu as before.\n";
+        print STDERR "\n";
 
         exit(0);
     }
 
     #  Standard jobs, run locally.
-
-    my $cwd = getcwd();  #  Remember where we are.
-    chdir($path);        #  So we can root the jobs in the correct location.
 
     foreach my $j (@jobs) {
         my $st;
@@ -1056,12 +1229,9 @@ sub submitOrRunParallelJob ($$$$$@) {
         }
 
         for (my $i=$st; $i<=$ed; $i++) {
-            my $outName  = buildOutputName($path, $script, substr("000000" . $i, -6));
-
-            schedulerSubmit("$path/$script.sh $i > $outName 2>&1");
+            schedulerSubmit("./$script.sh $i > ./" . buildOutputName($path, $script, $i) . " 2>&1");
         }
     }
-
 
     # compute limit based on # of cpus
     my $nCParallel  = getGlobal("${jobType}Concurrency");
@@ -1078,8 +1248,6 @@ sub submitOrRunParallelJob ($$$$$@) {
 
     schedulerSetNumberOfProcesses($nParallel);
     schedulerFinish($path);
-
-    chdir($cwd);
 }
 
 
@@ -1163,18 +1331,21 @@ sub runCommand ($$) {
 
     #  Log that we're starting, and show the pretty-ified command.
 
+    my $cwd = getcwd();        #  Remember where we are.
+    chdir($dir);               #  So we can root the jobs in the correct location.
+
     my $startsecs = time();
-    my $diskfree  = (defined($dir)) ? (diskSpace($dir)) : (0);
+    my $diskfree  = diskSpace(".");
 
     print STDERR "----------------------------------------\n";
-    print STDERR "-- Starting command on ", scalar(localtime()), " with $diskfree GB free disk space\n"  if  (defined($dir));
-    print STDERR "-- Starting command on ", scalar(localtime()), "\n"                                    if (!defined($dir));
+    print STDERR "-- Starting command on ", scalar(localtime()), " with $diskfree GB free disk space\n";
     print STDERR "\n";
+    print STDERR "    cd $dir\n";
     print STDERR "$dis\n";
 
-    my $rc = 0xffff & system("cd $dir && $cmd");
+    my $rc = 0xffff & system($cmd);
 
-    $diskfree = (defined($dir)) ? (diskSpace($dir)) : (0);
+    $diskfree = diskSpace(".");
 
     my $warning = "  !!! WARNING !!!" if ($diskfree < 10);
     my $elapsed = time() - $startsecs;
@@ -1187,6 +1358,8 @@ sub runCommand ($$) {
     print STDERR "-- Finished on ", scalar(localtime()), " ($elapsed) with $diskfree GB free disk space$warning\n";
     print STDERR "----------------------------------------\n";
 
+    chdir($cwd);
+
     #  Pretty much copied from Programming Perl page 230
 
     return(0) if ($rc == 0);
@@ -1198,6 +1371,8 @@ sub runCommand ($$) {
 
 
 
+#  Duplicated in Grid_Cloud.pm to get around recursive 'use' statements.
+
 sub runCommandSilently ($$$) {
     my $dir      = shift @_;
     my $cmd      = shift @_;
@@ -1206,11 +1381,12 @@ sub runCommandSilently ($$$) {
 
     return(0)   if ($cmd eq "");
 
-    if (! -d $dir) {
-        caFailure("Directory '$dir' doesn't exist, can't run command", "");
-    }
+    my $cwd       = getcwd();  #  Remember where we are.
+    chdir($dir);               #  So we can root the jobs in the correct location.
 
-    my $rc = 0xffff & system("cd $dir && $cmd");
+    my $rc = 0xffff & system($cmd);
+
+    chdir($cwd);
 
     return(0) if ($rc == 0);         #  No errors, return no error.
     return(1) if ($critical == 0);   #  If not critical, return that it failed, otherwise, report error and fail.
@@ -1254,16 +1430,14 @@ sub findExecutable ($) {
 
 #  Use caExit() for transient errors, like not opening files, processes that die, etc.
 sub caExit ($$) {
-    my  $wrk   = getGlobal("onExitDir");
     my  $asm   = getGlobal("onExitNam");
     my  $msg   = shift @_;
     my  $log   = shift @_;
 
     print STDERR "================================================================================\n";
-    print STDERR "Don't panic, but a mostly harmless error occurred and canu failed.\n";
+    print STDERR "Don't panic, but a mostly harmless error occurred and Canu stopped.\n";
     print STDERR "\n";
 
-    #  Really should pass in $wrk
     if (defined($log)) {
         my  $df = diskSpace($log);
 
@@ -1278,12 +1452,15 @@ sub caExit ($$) {
         print STDERR "\n";
     }
 
-    print STDERR "canu failed with '$msg'.\n";
+    my $version = getGlobal("version");
+
+    print STDERR "$version failed with:\n";
+    print STDERR "  $msg\n";
     print STDERR "\n";
 
     my $fail = getGlobal('onFailure');
     if (defined($fail)) {
-        runCommandSilently($wrk, "$fail $asm", 0);
+        runCommandSilently(getGlobal("onExitDir"), "$fail $asm", 0);
     }
 
     exit(1);
@@ -1292,17 +1469,18 @@ sub caExit ($$) {
 
 #  Use caFailure() for errors that definitely will require code changes to fix.
 sub caFailure ($$) {
-    my  $wrk   = getGlobal("onExitDir");
-    my  $asm   = getGlobal("onExitNam");
-    my  $msg   = shift @_;
-    my  $log   = shift @_;
+    my  $asm     = getGlobal("onExitNam");
+    my  $msg     = shift @_;
+    my  $log     = shift @_;
+    my  $version = getGlobal("version");
+    my  $trace   = longmess(undef);
 
     print STDERR "================================================================================\n";
-    print STDERR "Please panic.  canu failed, and it shouldn't have.\n";
+    print STDERR "Please panic.  Canu failed, and it shouldn't have.\n";
     print STDERR "\n";
     print STDERR "Stack trace:\n";
     print STDERR "\n";
-    cluck;
+    print STDERR "$trace\n";
     print STDERR "\n";
 
     if (-e $log) {
@@ -1312,11 +1490,13 @@ sub caFailure ($$) {
     }
 
     print STDERR "\n";
-    print STDERR "canu failed with '$msg'.\n";
+    print STDERR "$version failed with:\n";
+    print STDERR "  $msg\n";
+    print STDERR "\n";
 
     my $fail = getGlobal('onFailure');
     if (defined($fail)) {
-        runCommandSilently($wrk, "$fail $asm", 0);
+        runCommandSilently(getGlobal("onExitDir"), "$fail $asm", 0);
     }
 
     exit(1);

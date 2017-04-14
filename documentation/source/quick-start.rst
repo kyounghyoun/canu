@@ -4,44 +4,33 @@
 Canu Quick Start
 ================
 
-Canu specializes in assembling PacBio or Oxford Nanopore sequences.  Canu will correct the reads, then trim suspicious regions (such as remaining SMRTbell adapter), then
-assemble the corrected and cleaned reads into unitigs.
+Canu specializes in assembling PacBio or Oxford Nanopore sequences.  Canu will correct the reads,
+trim suspicious regions (such as remaining SMRTbell adapter), and then assemble the corrected and
+cleaned reads into contigs and unitigs.
 
-Brief Introduction
--------------------
-Canu has been designed to auto-detect your resources and scale itself to fit. Two parameters let you restrict the resources used.
+For eukaryotic genomes, coverage more than 20x is enough to outperform current hybrid methods.
+Between 30x and 60x coverage is the recommended minimum.  More coverage will let Canu use longer
+reads for assembly, which will result in better assemblies.
 
-::
+Input sequences can be FASTA or FASTQ format, uncompressed or compressed with gzip (.gz), bzip2
+(.bz2) or xz (.xz).  Zip files (.zip) are not supported.
 
- maxMemory=XX
- maxThreads=XX
+Canu will auto-detect your resources and scale itself to fit, using all of the resources available
+(depending on the size of your assembly).  You can limit memory and processors used with parameters
+:ref:`maxMemory` and :ref:`maxThreads`.
 
-Memory is specified in gigabytes. On a single machine, it will restrict Canu to at most this limit, on the grid, no single job will try to use more than the specified resources.
+Canu will take full advantage of any LSF/PBS/PBSPro/Torque/Slrum/SGE grid available, and do so
+automagically, even submitting itself for execution.  For details, refer to the section on
+:ref:`execution`.
 
-The input sequences can be FASTA or FASTQ format, uncompressed, or compressed with gz, bz2 or xz.
-
-Running on the grid
-~~~~~~~~~~~~~~~~~~~~~~
-Canu is designed to run on grid environments (LSF/PBS/Torque/Slrum/SGE are supported). Currently, Canu will submit itself to the default queue with default time options. You can overwrite this behavior by providing any specific parameters you want to be used for submission as an option. Users should also specify a job name to use on the grid:
-
-::
-
- gridOptionsJobName=myassembly
- "gridOptions=--partition quick --time 2:00"
 
 Assembling PacBio data
 ----------------------
 
-Pacific Biosciences released P6-C4 chemistry reads.  You can download them
-`directly <https://s3.amazonaws.com/files.pacb.com/datasets/secondary-analysis/e-coli-k12-P6C4/p6c4_ecoli_RSII_DDR2_with_15kb_cut_E01_1.tar.gz>`_
-(7 GB) or from the
-`original page <https://github.com/PacificBiosciences/DevNet/wiki/E.-coli-Bacterial-Assembly>`_.
-You must have the Pac Bio SMRTpipe software installed to extract the reads as FASTQ.
+Pacific Biosciences released P6-C4 chemistry reads for Escherichia coli K12.  You can download them
+`here <https://github.com/PacificBiosciences/DevNet/wiki/E.-coli-Bacterial-Assembly>`_, but note that you must have the `SMRTpipe software <http://www.pacb.com/support/software-downloads/>`_ installed to extract the reads as FASTQ.
 
-We made a 25X subset FASTQ available
-`here <http://gembox.cbcb.umd.edu/mhap/raw/ecoli_p6_25x.filtered.fastq>`_
-
-or use the following curl command:
+We made a 25X subset FASTQ available `here <http://gembox.cbcb.umd.edu/mhap/raw/ecoli_p6_25x.filtered.fastq>`_ (223MB), which can be downloaded with:
 
 ::
 
@@ -139,13 +128,13 @@ And finally, assemble the output of trimming, twice::
  canu -assemble \
    -p ecoli -d ecoli-erate-0.013 \
    genomeSize=4.8m \
-   errorRate=0.013 \
+   correctedErrorRate=0.039 \
    -pacbio-corrected ecoli/trimming/ecoli.trimmedReads.fasta.gz
 
  canu -assemble \
    -p ecoli -d ecoli-erate-0.025 \
    genomeSize=4.8m \
-   errorRate=0.025 \
+   correctedErrorRate=0.075 \
    -pacbio-corrected ecoli/trimming/ecoli.trimmedReads.fasta.gz
 
 The directory layout for correction and trimming is exactly the same as when we ran all tasks in the same command.
@@ -205,12 +194,12 @@ or use the following curl command:
 
  curl -L -o yeast.20x.fastq.gz http://gembox.cbcb.umd.edu/mhap/raw/yeast_filtered.20x.fastq.gz
 
-and run the assembler adding sensitive parameters (**errorRate=0.035**)::
+and run the assembler adding sensitive parameters (**correctedErrorRate=0.105**)::
 
  canu \
   -p asm -d yeast \
   genomeSize=12.1m \
-  errorRate=0.035 \
+  correctedErrorRate=0.105 \
   -pacbio-raw yeast.20x.fastq.gz
   
 

@@ -36,35 +36,38 @@ require Exporter;
 
 use strict;
 
-use File::Path qw(make_path remove_tree);
+use File::Path 2.08 qw(make_path remove_tree);
 
 use canu::Defaults;
 use canu::Execution;
 use canu::Gatekeeper;
 use canu::HTML;
+use canu::Grid_Cloud;
 
 #  Map long reads to long reads with minimap.
 
-sub mmapConfigure ($$$$) {
-    my $WRK     = shift @_;  #  Root work directory (the -d option to canu)
-    my $wrk     = $WRK;      #  Local work directory
+sub mmapConfigure ($$$) {
     my $asm     = shift @_;
     my $tag     = shift @_;
     my $typ     = shift @_;
     my $bin     = getBinDirectory();
 
-    $wrk = "$wrk/correction"  if ($tag eq "cor");
-    $wrk = "$wrk/trimming"    if ($tag eq "obt");
-    $wrk = "$wrk/unitigging"  if ($tag eq "utg");
+    my $base;                #  e.g., $base/1-overlapper/mhap.sh
+    my $path;                #  e.g., $path/mhap.sh
 
-    my $path = "$wrk/1-overlapper";
+    $base = "correction"  if ($tag eq "cor");
+    $base = "trimming"    if ($tag eq "obt");
+    $base = "unitigging"  if ($tag eq "utg");
+
+    $path = "$base/1-overlapper";
 
     caFailure("invalid type '$typ'", undef)  if (($typ ne "partial") && ($typ ne "normal"));
 
-    goto allDone   if (skipStage($WRK, $asm, "$tag-mmapConfigure") == 1);
-    goto allDone   if (-e "$path/mmap.sh");
-    goto allDone   if (-e "$path/ovljob.files");
-    goto allDone   if (-e "$wrk/$asm.ovlStore");
+    goto allDone   if (skipStage($asm, "$tag-mmapConfigure") == 1);
+    goto allDone   if (fileExists("$path/precompute.sh")) && (fileExists("$path/mmap.sh"));
+    goto allDone   if (fileExists("$path/ovljob.files"));
+    goto allDone   if (-e "$base/$asm.ovlStore");
+    goto allDone   if (fileExists("$base/$asm.ovlStore.tar"));
 
     print STDERR "--\n";
     print STDERR "-- OVERLAPPER (mmap) (correction)\n"  if ($tag eq "cor");
@@ -72,13 +75,13 @@ sub mmapConfigure ($$$$) {
     print STDERR "-- OVERLAPPER (mmap) (assembly)\n"    if ($tag eq "utg");
     print STDERR "--\n";
 
-    make_path("$path") if (! -d "$path");
+    make_path($path) if (! -d $path);
 
     #  Constants.
 
     my $merSize       = getGlobal("${tag}MMapMerSize");
 
-    my $numReads      = getNumberOfReadsInStore($wrk, $asm);
+    my $numReads      = getNumberOfReadsInStore($base, $asm);
     my $memorySize    = getGlobal("${tag}mmapMemory");
     my $blockPerGb    = getGlobal("${tag}MMapBlockSize");
     my $blockSize = int($blockPerGb * $memorySize);
@@ -174,7 +177,7 @@ sub mmapConfigure ($$$$) {
                 for (my $qid=$qbgn; $qid <= $qend; $qid++) {
                     my $qry = substr("000000" . $qid, -6);             #  Name for the query block
 
-                    symlink("$path/blocks/$qry.fasta", "$path/queries/$job/$qry.fasta");
+                    symlink("../../blocks/$qry.fasta", "$path/queries/$job/$qry.fasta");
                 }
 
             } else {
@@ -190,11 +193,26 @@ sub mmapConfigure ($$$$) {
 
     close(L);
 
+    #  Tar up the queries directory.  Only useful for cloud support.
+
+    runCommandSilently($path, "tar -cf queries.tar queries", 1);
+    stashFile("$path/queries.tar");
+
     #  Create a script to generate precomputed blocks, including extracting the reads from gkpStore.
+
+    #OPTIMIZE
+    #OPTIMIZE  Probably a big optimization for cloud assemblies, the block fasta inputs can be
+    #OPTIMIZE  computed ahead of time, stashed, and then fetched to do the actual precompute.
+    #OPTIMIZE
 
     open(F, "> $path/precompute.sh") or caFailure("can't open '$path/precompute.sh' for writing: $!", undef);
 
     print F "#!" . getGlobal("shell") . "\n";
+    print F "\n";
+    print F getBinDirectoryShellCode();
+    print F "\n";
+    print F setWorkDirectoryShellCode($path);
+    print F fetchStoreShellCode("$base/$asm.gkpStore", "$base/1-overlapper", "");
     print F "\n";
     print F getJobIDShellCode();
     print F "\n";
@@ -211,27 +229,26 @@ sub mmapConfigure ($$$$) {
     print F "  exit 1\n";
     print F "fi\n";
     print F "\n";
-    print F "if [ ! -d $path/blocks ]; then\n";
-    print F "  mkdir $path/blocks\n";
+    print F "if [ ! -d ./blocks ]; then\n";
+    print F "  mkdir -p ./blocks\n";
     print F "fi\n";
     print F "\n";
-    print F "if [ -e $path/blocks/\$job.fasta ]; then\n";
+    print F fileExistsShellCode("./blocks/\$job.fasta");
     print F "  echo Job previously completed successfully.\n";
     print F "  exit\n";
     print F "fi\n";
     print F "\n";
-    print F getBinDirectoryShellCode();
-    print F "\n";
     print F "\$bin/gatekeeperDumpFASTQ \\\n";
-    print F "  -G $wrk/$asm.gkpStore \\\n";
+    print F "  -G ../$asm.gkpStore \\\n";
     print F "  \$rge \\\n";
     print F "  -nolibname \\\n";
     print F "  -noreadname \\\n";
     print F "  -fasta \\\n";
-    print F "  -o $path/blocks/\$job \\\n";
-    print F "|| \\\n";
-    print F "mv -f $path/blocks/\$job.fasta $path/blocks/\$job.fasta.FAILED\n";
+    print F "  -o ./blocks/\$job.input \\\n";
+    print F "&& \\\n";
+    print F "mv -f ./blocks/\$job.input.fasta ./blocks/\$job.fasta\n";
     print F "\n";
+    print F stashFileShellCode("$base/1-overlapper/blocks", "\$job.fasta", "");
     print F "\n";
     print F "exit 0\n";
 
@@ -242,6 +259,11 @@ sub mmapConfigure ($$$$) {
     open(F, "> $path/mmap.sh") or caFailure("can't open '$path/mmap.sh' for writing: $!", undef);
 
     print F "#!" . getGlobal("shell") . "\n";
+    print F "\n";
+    print F getBinDirectoryShellCode();
+    print F "\n";
+    print F setWorkDirectoryShellCode($path);
+    print F fetchStoreShellCode("$base/$asm.gkpStore", "$base/1-overlapper", "");
     print F "\n";
     print F getJobIDShellCode();
     print F "\n";
@@ -260,25 +282,37 @@ sub mmapConfigure ($$$$) {
     print F "  exit 1\n";
     print F "fi\n";
     print F "\n";
-    print F "if [ -e $path/results/\$qry.ovb ]; then\n";
+    print F "if [ -e ./results/\$qry.ovb ]; then\n";
     print F "  echo Job previously completed successfully.\n";
     print F "  exit\n";
     print F "fi\n";
     print F "\n";
-    print F "if [ ! -d $path/results ]; then\n";
-    print F "  mkdir $path/results\n";
+ 
+    print F fetchFileShellCode("$path", "queries.tar", "");
+    print F "\n";
+    print F "if [ -e ./queries.tar -a ! -d ./queries ] ; then\n";
+    print F "  tar -xf ./queries.tar\n";
     print F "fi\n";
     print F "\n";
 
-    print F "echo Running block \$blk in query \$qry\n";
-
+    print F "if [ ! -d ./results ]; then\n";
+    print F "  mkdir -p ./results\n";
+    print F "fi\n";
     print F "\n";
-    print F getBinDirectoryShellCode();
+
+    print F fetchFileShellCode("$path", "blocks/\$blk.fasta", "");
+
+    print F "for ii in `ls ./queries/\$qry` ; do\n";
+    print F "  echo Fetch blocks/\$ii\n";
+    print F    fetchFileShellCode("$path", "blocks/\$ii", "  ");
+    print F "done\n";
     print F "\n";
 
-    # begin comparison, we loop through query and compare current block to it, if we need to do self first compare to self, otherwise initialize as empty
+    #  Begin comparison, we loop through query and compare current block to it, if we need to do
+    #  self first compare to self, otherwise initialize as empty
+
     print F "if [ x\$slf = x ]; then\n";
-    print F "   >  $path/results/\$qry.mmap.WORKING\n";
+    print F "   >  ./results/\$qry.mmap.WORKING\n";
     print F "else\n";
     print F "  \$bin/minimap \\\n";
     print F "    -k $merSize \\\n";
@@ -286,66 +320,69 @@ sub mmapConfigure ($$$$) {
     print F "     -L100 \\\n";
     print F "     -m0  \\\n";
     print F "    -t ", getGlobal("${tag}mmapThreads"), " \\\n";
-    print F "    $path/blocks/\$blk.fasta \\\n";
-    print F "    $path/blocks/\$blk.fasta \\\n";
-    print F "  > $path/results/\$qry.mmap.WORKING \n";
+    print F "    ./blocks/\$blk.fasta \\\n";
+    print F "    ./blocks/\$blk.fasta \\\n";
+    print F "  > ./results/\$qry.mmap.WORKING \n";
     print F " \n";
     print F "fi\n";
     print F "\n";
 
-    print F "for file in `ls $path/queries/\$qry/*.fasta`; do\n";
+    print F "for file in `ls queries/\$qry/*.fasta`; do\n";
     print F "  \$bin/minimap \\\n";
     print F "    -k $merSize \\\n";
     print F "    -Sw5 \\\n";
     print F "     -L100 \\\n";
     print F "     -m0  \\\n";
     print F "    -t ", getGlobal("${tag}mmapThreads"), " \\\n";
-    print F "    $path/blocks/\$blk.fasta \\\n";
+    print F "    ./blocks/\$blk.fasta \\\n";
     print F "    \$file \\\n";
-    print F "  >> $path/results/\$qry.mmap.WORKING \n";
+    print F "  >> ./results/\$qry.mmap.WORKING \n";
     print F "done\n";
     print F "\n";
-    print F "mv  $path/results/\$qry.mmap.WORKING  $path/results/\$qry.mmap\n";
+    print F "mv  ./results/\$qry.mmap.WORKING  ./results/\$qry.mmap\n";
     print F "\n";
 
-    print F "if [   -e \"$path/results/\$qry.mmap\" -a \\\n";
-    print F "     ! -e \"$path/results/\$qry.ovb\" ] ; then\n";
+    print F "if [   -e ./results/\$qry.mmap -a \\\n";
+    print F "     ! -e ./results/\$qry.ovb ] ; then\n";
     print F "  \$bin/mmapConvert \\\n";
-    print F "    -o $path/results/\$qry.mmap.ovb.WORKING \\\n";
-    print F "    $path/results/\$qry.mmap \\\n";
+    print F "    -G ../$asm.gkpStore \\\n";
+    print F "    -o ./results/\$qry.mmap.ovb.WORKING \\\n";
+    print F "    ./results/\$qry.mmap \\\n";
     print F "  && \\\n";
-    print F "  mv $path/results/\$qry.mmap.ovb.WORKING $path/results/\$qry.mmap.ovb\n";
+    print F "  mv ./results/\$qry.mmap.ovb.WORKING ./results/\$qry.mmap.ovb\n";
     print F "fi\n";
     print F "\n";
 
     if (getGlobal('saveOverlaps') eq "0") {
-        print F "if [   -e \"$path/results/\$qry.mmap\" -a \\\n";
-        print F "       -e \"$path/results/\$qry.mmap.ovb\" ] ; then\n";
-        print F "  rm -f $path/results/\$qry.mmap\n";
+        print F "if [   -e ./results/\$qry.mmap -a \\\n";
+        print F "       -e ./results/\$qry.mmap.ovb ] ; then\n";
+        print F "  rm -f ./results/\$qry.mmap\n";
         print F "fi\n";
         print F "\n";
     }
 
-    print F "if [ -e \"$path/results/\$qry.mmap.ovb\" ] ; then\n";
-    if (getGlobal("${tag}ReAlign") eq "raw") {
+    print F "if [ -e ./results/\$qry.mmap.ovb ] ; then\n";
+    if (getGlobal("${tag}ReAlign") eq "1") {
         print F "  \$bin/overlapPair \\\n";
-        print F "    -G $wrk/$asm.gkpStore \\\n";
-        print F "    -O $path/results/\$qry.mmap.ovb \\\n";
-        print F "    -o $path/results/\$qry.ovb \\\n";
+        print F "    -G ../$asm.gkpStore \\\n";
+        print F "    -O ./results/\$qry.mmap.ovb \\\n";
+        print F "    -o ./results/\$qry.ovb \\\n";
         print F "    -partial \\\n"  if ($typ eq "partial");
-        print F "    -erate ", getGlobal("corErrorRate"),    " \\\n"  if ($tag eq "cor");
+        print F "    -erate ", getGlobal("corOvlErrorRate"), " \\\n"  if ($tag eq "cor");   #  Explicitly using proper name for grepability.
         print F "    -erate ", getGlobal("obtOvlErrorRate"), " \\\n"  if ($tag eq "obt");
         print F "    -erate ", getGlobal("utgOvlErrorRate"), " \\\n"  if ($tag eq "utg");
         print F "    -memory " . getGlobal("${tag}mmapMemory") . " \\\n";
         print F "    -t " . getGlobal("${tag}mmapThreads") . " \n";
     } else {
-        print F "  mv -f \"$path/results/\$qry.mmap.ovb\" \"$path/results/\$qry.ovb\"\n";
+        print F "  mv -f ./results/\$qry.mmap.ovb    ./results/\$qry.ovb\n";
+        print F "  mv -f ./results/\$qry.mmap.counts ./results/\$qry.counts\n";
     }
     print F "fi\n";
 
+    print F stashFileShellCode("$path", "results/\$qry.ovb",    "");
+    print F stashFileShellCode("$path", "results/\$qry.counts", "");
     print F "\n";
-    print F "\n";
-    #print F "rm -rf $path/queries/\$qry\n";
+
     print F "\n";
     print F "exit 0\n";
 
@@ -366,39 +403,46 @@ sub mmapConfigure ($$$$) {
         my $numJobs = 0;
         open(F, "< $path/mmap.sh") or caFailure("can't open '$path/mmap.sh' for reading: $!", undef);
         while (<F>) {
-            $numJobs++  if (m/^\s+qry=\"(\d+)\"$/);
+            $numJobs++  if (m/^\s+qry=/);
         }
         close(F);
 
         print STDERR "-- Configured $numJobs mmap overlap jobs.\n";
     }
 
+    stashFile("$path/precompute.sh");
+    stashFile("$path/mhap.sh");
+
   finishStage:
-    emitStage($WRK, $asm, "$tag-mmapConfigure");
-    buildHTML($WRK, $asm, $tag);
-    stopAfter("mmapConfigure");
+    emitStage($asm, "$tag-mmapConfigure");
+    buildHTML($asm, $tag);
 
   allDone:
+    stopAfter("overlapConfigure");
 }
 
 
-sub mmapPrecomputeCheck ($$$$) {
-    my $WRK     = shift @_;  #  Root work directory (the -d option to canu)
-    my $wrk     = $WRK;      #  Local work directory
+sub mmapPrecomputeCheck ($$$) {
     my $asm     = shift @_;
     my $tag     = shift @_;
     my $typ     = shift @_;
     my $attempt = getGlobal("canuIteration");
 
-    $wrk = "$wrk/correction"  if ($tag eq "cor");
-    $wrk = "$wrk/trimming"    if ($tag eq "obt");
-    $wrk = "$wrk/unitigging"  if ($tag eq "utg");
+    my $base;                #  e.g., $base/1-overlapper/mhap.sh
+    my $path;                #  e.g., $path/mhap.sh
 
-    my $path    = "$wrk/1-overlapper";
+    $base = "correction"  if ($tag eq "cor");
+    $base = "trimming"    if ($tag eq "obt");
+    $base = "unitigging"  if ($tag eq "utg");
 
-    goto allDone   if (skipStage($WRK, $asm, "$tag-mmapPrecomputeCheck", $attempt) == 1);
-    goto allDone   if (-e "$path/precompute.files");
-    goto allDone   if (-e "$wrk/$asm.ovlStore");
+    $path = "$base/1-overlapper";
+
+    goto allDone   if (skipStage($asm, "$tag-mmapPrecomputeCheck", $attempt) == 1);
+    goto allDone   if (fileExists("$path/precompute.files"));
+    goto allDone   if (-e "$base/$asm.ovlStore");
+    goto allDone   if (fileExists("$base/$asm.ovlStore.tar"));
+
+    fetchFile("$path/precompute.sh");
 
     #  Figure out if all the tasks finished correctly.
 
@@ -410,10 +454,10 @@ sub mmapPrecomputeCheck ($$$$) {
     open(F, "< $path/precompute.sh") or caFailure("can't open '$path/precompute.sh' for reading: $!", undef);
     while (<F>) {
         if (m/^\s+job=\"(\d+)\"$/) {
-            if (-e "$path/blocks/$1.fasta") {
-                push @successJobs, "$path/blocks/$1.fasta\n";
+            if (fileExists("$path/blocks/$1.fasta")) {
+                push @successJobs, "1-overlapper/blocks/$1.fasta\n";
             } else {
-                $failureMessage .= "--   job $path/blocks/$1.fasta FAILED.\n";
+                $failureMessage .= "--   job 1-overlapper/blocks/$1.fasta FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -443,12 +487,10 @@ sub mmapPrecomputeCheck ($$$$) {
 
         #  Otherwise, run some jobs.
 
-        print STDERR "-- mmap precompute attempt $attempt begins with ", scalar(@successJobs), " finished, and ", scalar(@failedJobs), " to compute.\n";
+        emitStage($asm, "$tag-mmapPrecomputeCheck", $attempt);
+        buildHTML($asm, $tag);
 
-        emitStage($WRK, $asm, "$tag-mmapPrecomputeCheck", $attempt);
-        buildHTML($WRK, $asm, $tag);
-
-        submitOrRunParallelJob($WRK, $asm, "${tag}mmap", $path, "precompute", @failedJobs);
+        submitOrRunParallelJob($asm, "${tag}mmap", $path, "precompute", @failedJobs);
         return;
     }
 
@@ -459,32 +501,37 @@ sub mmapPrecomputeCheck ($$$$) {
     print L @successJobs;
     close(L);
 
-    setGlobal("canuIteration", 1);
-    emitStage($WRK, $asm, "$tag-mmapPrecomputeCheck");
-    buildHTML($WRK, $asm, $tag);
-    stopAfter("mmapPrecompute");
+    stashFile("$path/precompute.files");
+
+    emitStage($asm, "$tag-mmapPrecomputeCheck");
+    buildHTML($asm, $tag);
 
   allDone:
 }
 
 
-sub mmapCheck ($$$$) {
-    my $WRK     = shift @_;  #  Root work directory (the -d option to canu)
-    my $wrk     = $WRK;      #  Local work directory
+
+sub mmapCheck ($$$) {
     my $asm     = shift @_;
     my $tag     = shift @_;
     my $typ     = shift @_;
     my $attempt = getGlobal("canuIteration");
 
-    $wrk = "$wrk/correction"  if ($tag eq "cor");
-    $wrk = "$wrk/trimming"    if ($tag eq "obt");
-    $wrk = "$wrk/unitigging"  if ($tag eq "utg");
+    my $base;                #  e.g., $base/1-overlapper/mhap.sh
+    my $path;                #  e.g., $path/mhap.sh
 
-    my $path    = "$wrk/1-overlapper";
+    $base = "correction"  if ($tag eq "cor");
+    $base = "trimming"    if ($tag eq "obt");
+    $base = "unitigging"  if ($tag eq "utg");
 
-    goto allDone   if (skipStage($WRK, $asm, "$tag-mmapCheck", $attempt) == 1);
-    goto allDone   if (-e "$path/mmap.files");
-    goto allDone   if (-e "$wrk/$asm.ovlStore");
+    $path = "$base/1-overlapper";
+
+    goto allDone   if (skipStage($asm, "$tag-mmapCheck", $attempt) == 1);
+    goto allDone   if (fileExists("$path/mmap.files"));
+    goto allDone   if (-e "$base/$asm.ovlStore");
+    goto allDone   if (fileExists("$base/$asm.ovlStore.tar"));
+
+    fetchFile("$path/mmap.sh");
 
     #  Figure out if all the tasks finished correctly.
 
@@ -498,32 +545,32 @@ sub mmapCheck ($$$$) {
     open(F, "< $path/mmap.sh") or caExit("failed to open '$path/mmap.sh'", undef);
     while (<F>) {
         if (m/^\s+qry=\"(\d+)\"$/) {
-            if      (-e "$path/results/$1.ovb.gz") {
-                push @mmapJobs,    "$path/results/$1.mmap\n";
-                push @successJobs, "$path/results/$1.ovb.gz\n";
-                push @miscJobs,    "$path/results/$1.stats\n";
-                push @miscJobs,    "$path/results/$1.counts\n";
+            if      (fileExists("$path/results/$1.ovb.gz")) {
+                push @mmapJobs,    "1-overlapper/results/$1.mmap\n";
+                push @successJobs, "1-overlapper/results/$1.ovb.gz\n";
+                push @miscJobs,    "1-overlapper/results/$1.stats\n";
+                push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
-            } elsif (-e "$path/results/$1.ovb") {
-                push @mmapJobs,    "$path/results/$1.mmap\n";
-                push @successJobs, "$path/results/$1.ovb\n";
-                push @miscJobs,    "$path/results/$1.stats\n";
-                push @miscJobs,    "$path/results/$1.counts\n";
+            } elsif (fileExists("$path/results/$1.ovb")) {
+                push @mmapJobs,    "1-overlapper/results/$1.mmap\n";
+                push @successJobs, "1-overlapper/results/$1.ovb\n";
+                push @miscJobs,    "1-overlapper/results/$1.stats\n";
+                push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
-            } elsif (-e "$path/results/$1.ovb.bz2") {
-                push @mmapJobs,    "$path/results/$1.mmap\n";
-                push @successJobs, "$path/results/$1.ovb.bz2\n";
-                push @miscJobs,    "$path/results/$1.stats\n";
-                push @miscJobs,    "$path/results/$1.counts\n";
+            } elsif (fileExists("$path/results/$1.ovb.bz2")) {
+                push @mmapJobs,    "1-overlapper/results/$1.mmap\n";
+                push @successJobs, "1-overlapper/results/$1.ovb.bz2\n";
+                push @miscJobs,    "1-overlapper/results/$1.stats\n";
+                push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
-            } elsif (-e "$path/results/$1.ovb.xz") {
-                push @mmapJobs,    "$path/results/$1.mmap\n";
-                push @successJobs, "$path/results/$1.ovb.xz\n";
-                push @miscJobs,    "$path/results/$1.stats\n";
-                push @miscJobs,    "$path/results/$1.counts\n";
+            } elsif (fileExists("$path/results/$1.ovb.xz")) {
+                push @mmapJobs,    "1-overlapper/results/$1.mmap\n";
+                push @successJobs, "1-overlapper/results/$1.ovb.xz\n";
+                push @miscJobs,    "1-overlapper/results/$1.stats\n";
+                push @miscJobs,    "1-overlapper/results/$1.counts\n";
 
             } else {
-                $failureMessage .= "--   job $path/results/$1.ovb FAILED.\n";
+                $failureMessage .= "--   job 1-overlapper/results/$1.ovb FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 
@@ -562,11 +609,9 @@ sub mmapCheck ($$$$) {
 
         #  Otherwise, run some jobs.
 
-        print STDERR "-- mmap attempt $attempt begins with ", scalar(@successJobs), " finished, and ", scalar(@failedJobs), " to compute.\n";
-
-        emitStage($WRK, $asm, "$tag-mmapCheck", $attempt);
-        buildHTML($WRK, $asm, $tag);
-        submitOrRunParallelJob($WRK, $asm, "${tag}mmap", $path, "mmap", @failedJobs);
+        emitStage($asm, "$tag-mmapCheck", $attempt);
+        buildHTML($asm, $tag);
+        submitOrRunParallelJob($asm, "${tag}mmap", $path, "mmap", @failedJobs);
         return;
     }
 
@@ -585,11 +630,14 @@ sub mmapCheck ($$$$) {
     print L @miscJobs;
     close(L);
 
-    setGlobal("canuIteration", 1);
-    emitStage($WRK, $asm, "$tag-mmapCheck");
-    buildHTML($WRK, $asm, $tag);
-    stopAfter("mmapOverlap");
+    stashFile("$path/mmap.files");
+    stashFile("$path/ovljob.files");
+    stashFile("$path/ovljob.more.files");
+
+    emitStage($asm, "$tag-mmapCheck");
+    buildHTML($asm, $tag);
 
   allDone:
+    stopAfter("overlap");
 }
 

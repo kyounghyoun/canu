@@ -44,21 +44,22 @@ require Exporter;
 
 use strict;
 
-use File::Path qw(make_path remove_tree);
+use File::Path 2.08 qw(make_path remove_tree);
 use POSIX qw(ceil);
 
 use canu::Defaults;
 use canu::Execution;
 use canu::Configure;    #  For displayGenomeSize
 use canu::Gatekeeper;
+use canu::Report;
 use canu::HTML;
 use canu::Meryl;
+use canu::Grid_Cloud;
 
 
 
 
-sub reportUnitigSizes ($$$$) {
-    my $wrk       = shift @_;
+sub reportUnitigSizes ($$$) {
     my $asm       = shift @_;
     my $version   = shift @_;
     my $label     = shift @_;
@@ -82,24 +83,33 @@ sub reportUnitigSizes ($$$$) {
     my $gs        = getGlobal("genomeSize");
 
     my $V = substr("000000" . $version, -3);
-    my $N = "$wrk/$asm.ctgStore/seqDB.v$V.sizes.txt";
+    my $N = "$asm.ctgStore/seqDB.v$V.sizes.txt";
 
-    if (! -e $N) {
-        $cmd  = "$bin/tgStoreDump \\\n";
-        $cmd .= "  -G $wrk/$asm.gkpStore \\\n";
-        $cmd .= "  -T $wrk/$asm.ctgStore $version \\\n";
+    fetchFile("unitigging/$N");
+
+    if (! -e "unitigging/$N") {
+        fetchStore("unitigging/$asm.gkpStore");
+
+        fetchFile("unitigging/$asm.ctgStore/seqDB.v$V.dat");
+        fetchFile("unitigging/$asm.ctgStore/seqDB.v$V.tig");
+
+        $cmd  = "$bin/tgStoreDump \\\n";                     #  Duplicated at the end of unitigger.sh
+        $cmd .= "  -G ./$asm.gkpStore \\\n";
+        $cmd .= "  -T ./$asm.ctgStore $version \\\n";
         $cmd .= "  -sizes -s " . getGlobal("genomeSize") . " \\\n";
-        $cmd .= "> $N";
+        $cmd .= "> ./$N";
 
-        if (runCommand($wrk, $cmd)) {
+        if (runCommand("unitigging", $cmd)) {
             caExit("failed to generate unitig sizes", undef);
         }
+
+        stashFile("unitigging/$N");
     }
 
     $ctgSizes .= "--            NG (bp)  LG (contigs)    sum (bp)\n";
     $ctgSizes .= "--         ----------  ------------  ----------\n";
 
-    open(F, "< $N") or caExit("failed to open '$N' for reading: $!\n", undef);
+    open(F, "< unitigging/$N") or caExit("failed to open 'unitigging/$N' for reading: $!", undef);
     while (<F>) {
         $rptBases  = $1  if (m/lenSuggestRepeat\s+sum\s+(\d+)/);
         $rptNum    = $1  if (m/lenSuggestRepeat\s+num\s+(\d+)/);
@@ -129,28 +139,36 @@ sub reportUnitigSizes ($$$$) {
     }
     close(F);
 
-    print STDERR "-- Found, in version $version, $label:\n";
-    print STDERR "--   contigs:      $ctgNum sequences, total length $ctgBases bp (including $rptNum repeats of total length $rptBases bp).\n";
-    print STDERR "--   bubbles:      $bubNum sequences, total length $bubBases bp.\n";
-    print STDERR "--   unassembled:  $usmNum sequences, total length $usmBases bp.\n";
-    print STDERR "--\n";
-    print STDERR "-- Contig sizes based on genome size ", displayGenomeSize($gs), "bp:\n";
-    print STDERR "--\n";
-    print STDERR "$ctgSizes";
-    print STDERR "--\n";
+    my $report;
+
+    $report .= "-- Found, in version $version, $label:\n";
+    $report .= "--   contigs:      $ctgNum sequences, total length $ctgBases bp (including $rptNum repeats of total length $rptBases bp).\n";
+    $report .= "--   bubbles:      $bubNum sequences, total length $bubBases bp.\n";
+    $report .= "--   unassembled:  $usmNum sequences, total length $usmBases bp.\n";
+    $report .= "--\n";
+    $report .= "-- Contig sizes based on genome size ", displayGenomeSize($gs), "bp:\n";
+    $report .= "--\n";
+    $report .= $ctgSizes;
+    $report .= "--\n";
+
+    #  Hmmm.  Report wants a small tag, but $label is a bit verbose.
+
+    addToReport("contigs",   $report)    if ($label eq "after unitig construction");
+    addToReport("consensus", $report)    if ($label eq "after consensus generation");
 }
 
 
 
-sub unitig ($$) {
-    my $WRK     = shift @_;           #  Root work directory (the -d option to canu)
-    my $wrk     = "$WRK/unitigging";  #  Local work directory
+sub unitig ($) {
     my $asm     = shift @_;
+    my $path    = "unitigging/4-unitigger";
 
-    goto allDone    if (skipStage($wrk, $asm, "unitig") == 1);
-    goto allDone    if ((-d "$wrk/$asm.ctgStore") && (-d "$wrk/$asm.utgStore"));
+    goto allDone    if (skipStage($asm, "unitig") == 1);
+    goto allDone    if (fileExists("unitigging/4-unitigger/unitigger.sh"));
+    goto allDone    if (fileExists("unitigging/$asm.utgStore/seqDB.v001.tig") &&
+                        fileExists("unitigging/$asm.ctgStore/seqDB.v001.tig"));
 
-    make_path("$wrk/4-unitigger")  if (! -d "$wrk/4-unitigger");
+    make_path($path)  if (! -d $path);
 
     #  How many reads per partition?  This will change - it'll move to be after unitigs are constructed.
 
@@ -158,25 +176,34 @@ sub unitig ($$) {
 
     #  Dump a script to run the unitigger.
 
-    open(F, "> $wrk/4-unitigger/unitigger.sh") or caExit("can't open '$wrk/4-unitigger/unitigger.sh' for writing: $!\n", undef);
+    open(F, "> $path/unitigger.sh") or caExit("can't open '$path/unitigger.sh' for writing: $!\n", undef);
 
     print F "#!" . getGlobal("shell") . "\n";
     print F "\n";
-    print F "if [ -e $wrk/$asm.ctgStore/seqDB.v001.tig -a -e $wrk/$asm.utgStore/seqDB.v001.tig ] ; then\n";
+    print F getBinDirectoryShellCode();
+    print F "\n";
+    print F setWorkDirectoryShellCode($path);
+    print F "\n";
+    print F fetchStoreShellCode("unitigging/$asm.gkpStore", $path, "");
+    print F fetchStoreShellCode("unitigging/$asm.ovlStore", $path, "");
+    print F "\n";
+    print F fetchFileShellCode("unitigging/$asm.ovlStore", "evalues", "");
+    print F "\n";
+    print F getJobIDShellCode();
+    print F "\n";
+    print F "if [ -e unitigging/$asm.ctgStore/seqDB.v001.tig -a -e unitigging/$asm.utgStore/seqDB.v001.tig ] ; then\n";
     print F "  exit 0\n";
     print F "fi\n";
-    print F "\n";
-    print F getBinDirectoryShellCode();
     print F "\n";
 
     if      (getGlobal("unitigger") eq "bogart") {
         print F "\$bin/bogart \\\n";
-        print F " -G $wrk/$asm.gkpStore \\\n";
-        print F " -O $wrk/$asm.ovlStore \\\n";
-        print F " -o $wrk/4-unitigger/$asm \\\n";
+        print F " -G ../$asm.gkpStore \\\n";
+        print F " -O ../$asm.ovlStore \\\n";
+        print F " -o ./$asm \\\n";
         print F " -gs "             . getGlobal("genomeSize")         . " \\\n";
-        print F " -eg "             . getGlobal("utgOvlErrorRate")    . " \\\n";
-        print F " -eM "             . getGlobal("utgOvlErrorRate")    . " \\\n";
+        print F " -eg "             . getGlobal("utgErrorRate")       . " \\\n";
+        print F " -eM "             . getGlobal("utgErrorRate")       . " \\\n";
         print F " -el "             . $overlapLength                  . " \\\n";
         print F " -dg "             . getGlobal("utgGraphDeviation")  . " \\\n";
         print F " -db "             . getGlobal("utgGraphDeviation")  . " \\\n";
@@ -187,24 +214,42 @@ sub unitig ($$) {
         print F " -M "              . getGlobal("batMemory")          . " \\\n"   if (defined(getGlobal("batMemory")));
         print F " -unassembled "    . getGlobal("contigFilter")       . " \\\n"   if (defined(getGlobal("contigFilter")));
         print F " "                 . getGlobal("batOptions")         . " \\\n"   if (defined(getGlobal("batOptions")));
-        print F " > $wrk/4-unitigger/unitigger.err 2>&1 \\\n";
+        print F " > ./unitigger.err 2>&1 \\\n";
         print F "&& \\\n";
-        print F "mv $wrk/4-unitigger/$asm.ctgStore $wrk/$asm.ctgStore \\\n";
+        print F "mv ./$asm.ctgStore ../$asm.ctgStore \\\n";
         print F "&& \\\n";
-        print F "mv $wrk/4-unitigger/$asm.utgStore $wrk/$asm.utgStore\n";
+        print F "mv ./$asm.utgStore ../$asm.utgStore\n";
     } else {
         caFailure("unknown unitigger '" . getGlobal("unitigger") . "'", undef);
     }
 
     print F "\n";
+    print F stashFileShellCode("unitigging/4-unitigger", "$asm.unitigs.gfa", "");
+    print F stashFileShellCode("unitigging/4-unitigger", "$asm.contigs.gfa", "");
+    print F "\n";
+    print F stashFileShellCode("unitigging/$asm.ctgStore", "seqDB.v001.dat", "");
+    print F stashFileShellCode("unitigging/$asm.ctgStore", "seqDB.v001.tig", "");
+    print F "\n";
+    print F stashFileShellCode("unitigging/$asm.utgStore", "seqDB.v001.dat", "");
+    print F stashFileShellCode("unitigging/$asm.utgStore", "seqDB.v001.tig", "");
+    print F "\n";
+    print F "\$bin/tgStoreDump \\\n";                    #  Duplicated in reportUnitigSizes()
+    print F "  -G ../$asm.gkpStore \\\n";                 #  Done here so we don't need another
+    print F "  -T ../$asm.ctgStore 1 \\\n";               #  pull of gkpStore and ctgStore
+    print F "  -sizes -s " . getGlobal("genomeSize") . " \\\n";
+    print F "> ../$asm.ctgStore/seqDB.v001.sizes.txt";
+    print F "\n";
+    print F stashFileShellCode("unitigging/$asm.ctgStore", "seqDB.v001.sizes.txt", "");
+    print F "\n";
     print F "exit 0\n";
 
     close(F);
 
+    stashFile("$path/unitigger.sh");
+
   finishStage:
-    emitStage($WRK, $asm, "unitig");
-    buildHTML($WRK, $asm, "utg");
-    stopAfter("unitig");
+    emitStage($asm, "unitig");
+    buildHTML($asm, "utg");
 
   allDone:
 }
@@ -212,18 +257,21 @@ sub unitig ($$) {
 
 
 
-sub unitigCheck ($$) {
-    my $WRK     = shift @_;           #  Root work directory
-    my $wrk     = "$WRK/unitigging";  #  Local work directory
+sub unitigCheck ($) {
     my $asm     = shift @_;
     my $attempt = getGlobal("canuIteration");
-    my $path    = "$wrk/4-unitigger";
+    my $path    = "unitigging/4-unitigger";
 
-    goto allDone  if (skipStage($WRK, $asm, "unitigCheck", $attempt) == 1);
-    goto allDone  if ((-e "$wrk/$asm.ctgStore/seqDB.v001.tig") && (-e "$wrk/$asm.utgStore/seqDB.v001.tig"));
+    goto allDone      if (skipStage($asm, "unitigCheck", $attempt) == 1);
+    goto allDone      if (fileExists("$path/unitigger.success"));
+    goto finishStage  if (fileExists("unitigging/$asm.utgStore/seqDB.v001.tig") &&
+                          fileExists("unitigging/$asm.ctgStore/seqDB.v001.tig"));
+
+    fetchFile("$path/unitigger.sh");
 
     #  Since there is only one job, if we get here, we're not done.  Any other 'check' function
     #  shows how to process multiple jobs.  This only checks for the existence of the final outputs.
+    #  (meryl is the same)
 
     #  If not the first attempt, report the jobs that failed, and that we're recomputing.
 
@@ -241,26 +289,27 @@ sub unitigCheck ($$) {
 
     #  Otherwise, run some jobs.
 
-    print STDERR "-- Unitigger attempt $attempt begins.\n";
+    emitStage($asm, "unitigCheck", $attempt);
+    buildHTML($asm, "utg");
 
-    emitStage($WRK, $asm, "unitigCheck", $attempt);
-    buildHTML($WRK, $asm, "utg");
-
-    submitOrRunParallelJob($WRK, $asm, "bat", $path, "unitigger", (1));
+    submitOrRunParallelJob($asm, "bat", $path, "unitigger", (1));
     return;
-
-    #  If onGrid, the submitOrRun() has submitted parallel jobs to the grid, and resubmitted the
-    #  executive.  #  The parallel version never gets here
 
   finishStage:
     print STDERR "-- Unitigger finished successfully.\n";
 
-    reportUnitigSizes($wrk, $asm, 1, "after unitig construction");
+    make_path($path);   #  With object storage, we might not have this directory!
 
-    setGlobal("canuIteration", 1);
-    emitStage($WRK, $asm, "unitigCheck");
-    buildHTML($WRK, $asm, "utg");
-    stopAfter("unitigCheck");
+    open(F, "> $path/unitigger.success") or caExit("can't open '$path/unitigger.success' for writing: $!", undef);
+    close(F);
+
+    stashFile("$path/unitigger.success");
+
+    reportUnitigSizes($asm, 1, "after unitig construction");
+
+    emitStage($asm, "unitigCheck");
+    buildHTML($asm, "utg");
 
   allDone:
+    stopAfter("unitig");
 }

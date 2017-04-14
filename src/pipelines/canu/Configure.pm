@@ -39,7 +39,7 @@ use Carp qw(cluck);
 use Sys::Hostname;
 
 use canu::Defaults;
-
+use canu::Execution;
 
 #  This is called to expand parameter ranges for memory and thread parameters.
 #  Examples of valid ranges:
@@ -145,19 +145,42 @@ sub expandRange ($$) {
 }
 
 
+sub findGridMaxMemoryAndThreads () {
+    my @grid   = split '\0', getGlobal("availableHosts");
+    my $maxmem = 0;
+    my $maxcpu = 0;
+
+    foreach my $g (@grid) {
+        my ($cpu, $mem, $num) = split '-', $g;
+
+        $maxmem = ($maxmem < $mem) ? $mem : $maxmem;
+        $maxcpu = ($maxcpu < $cpu) ? $cpu : $maxcpu;
+    }
+
+    return($maxmem, $maxcpu);
+}
+
+
 #  Side effect!  This will RESET the $global{} parameters to the computed value.  This lets
 #  the rest of canu - in particular, the part that runs the jobs - use the correct value.  Without
 #  resetting, I'd be making code changes all over the place to support the values returned.
 
-sub getAllowedResources ($$$$) {
+sub getAllowedResources ($$$$@) {
     my $tag  = shift @_;  #  Variant, e.g., "cor", "utg"
     my $alg  = shift @_;  #  Algorithm, e.g., "mhap", "ovl"
     my $err  = shift @_;  #  Report of things we can't run.
     my $all  = shift @_;  #  Report of things we can run.
+    my $dbg  = shift @_;  #  Optional, report debugging stuff
 
     #  If no grid, or grid not enabled, everything falls under 'lcoal'.
 
     my $class = ((getGlobal("useGrid") ne "0") && (defined(getGlobal("gridEngine")))) ? "grid" : "local";
+
+    #  If grid, but no hosts, fail.
+
+    if (($class eq "grid") && (!defined(getGlobal("availableHosts")))) {
+        caExit("invalid useGrid (" . getGlobal("useGrid") . ") and gridEngine (" . getGlobal("gridEngine") . "); found no execution hosts - is grid available from this host?", undef);
+    }
 
     #  Figure out limits.
 
@@ -175,8 +198,20 @@ sub getAllowedResources ($$$$) {
     #  If the maximum limits aren't set, default to 'unlimited' (for the grid; we'll effectively filter
     #  by the number of jobs we can fit on the hosts) or to the current hardware limits.
 
-    $maxMemory  = (($class eq "grid") ? 1024 * 1024 : getPhysicalMemorySize())  if (!defined($maxMemory));    #  1 PB memory!
-    $maxThreads = (($class eq "grid") ? 1024        : getNumberOfCPUs())        if (!defined($maxThreads));   #  1 k  cores!
+    if ($dbg) {
+        print STDERR "--\n";
+        print STDERR "-- DEBUG\n";
+        print STDERR "-- DEBUG  Limited to $maxMemory GB memory via maxMemory option\n"   if (defined($maxMemory));
+        print STDERR "-- DEBUG  Limited to $maxThreads threads via maxThreads option\n"   if (defined($maxThreads));
+    }
+
+    #  Figure out the largest memory and threads that could ever be supported.  This lets us short-circuit
+    #  the loop below.
+
+    my ($gridMaxMem, $gridMaxThr) = findGridMaxMemoryAndThreads();
+
+    $maxMemory  = (($class eq "grid") ? $gridMaxMem : getPhysicalMemorySize())  if (!defined($maxMemory));
+    $maxThreads = (($class eq "grid") ? $gridMaxThr : getNumberOfCPUs())        if (!defined($maxThreads));
 
     #  Build a list of the available hardware configurations we can run on.  If grid, we get this
     #  from the list of previously discovered hosts.  If local, it's just this machine.
@@ -187,10 +222,6 @@ sub getAllowedResources ($$$$) {
 
     if ($class eq "grid") {
         my @grid = split '\0', getGlobal("availableHosts");
-
-        if (scalar(@grid) == 0) {
-            caExit("invalid useGrid (" . getGlobal("useGrid") . ") and gridEngine (" . getGlobal("gridEngine") . "); found no execution hosts - is grid available from this host?", undef);
-        }
 
         foreach my $g (@grid) {
             my ($cpu, $mem, $num) = split '-', $g;
@@ -207,6 +238,15 @@ sub getAllowedResources ($$$$) {
         push @gridNum, 1;
     }
 
+    if ($dbg) {
+        print STDERR "-- DEBUG\n";
+        print STDERR "-- DEBUG Have ", scalar(@gridCor), " configurations; largest memory size $maxMemory GB; most cores $maxThreads:\n";
+        for (my $ii=0; $ii<scalar(@gridCor); $ii++) {
+            print STDERR "-- DEBUG   class$ii - $gridNum[$ii] machines with $gridCor[$ii] cores with $gridMem[$ii]GB memory each.\n";
+        }
+        print STDERR "-- DEBUG\n";
+    }
+
     #  The task usually has multiple choices, and we have a little optimization problem to solve.  For each
     #  pair of memory/threads, compute three things:
     #    a) how many processes we can get running
@@ -217,39 +257,6 @@ sub getAllowedResources ($$$$) {
 
     my @taskMemory  = expandRange("${tag}${alg}Memory",  $taskMemory);
     my @taskThreads = expandRange("${tag}${alg}Threads", $taskThreads);
-
-    #  Filter out task settings that can't be run based on the gridMemory/gridThreads or masterMemory/masterThreads setting.
-    #  (actually, this just reports those that would be filtered; the actual filtering is inline in the algorithm)
-
-    my $ignoreM;
-    my $ignoreT;
-
-    foreach my $m (@taskMemory) {
-        $m = adjustMemoryValue($m);
-    }
-
-    foreach my $m (@taskMemory) {
-        next  if ($m <= $maxMemory);
-        $ignoreM .= ","  if (defined($ignoreM));
-        $ignoreM .= "${m}g";
-    }
-    foreach my $t (@taskThreads) {
-        next  if ($t <= $maxThreads);
-        $ignoreT .= ","  if (defined($ignoreT));
-        $ignoreT .= "$t";
-    }
-
-    #  Too verbose with long value lists
-    #
-    #if      (defined($ignoreM) && defined($ignoreT)) {
-    #    $err .= "-- Can't use ${tag}${alg}Memory=$ignoreM and ${tag}${alg}Threads=$ignoreT because of maxMemory=${maxMemory}g and maxThreads=$maxThreads limits.\n";
-    #
-    #} elsif (defined($ignoreM)) {
-    #    $err .= "-- Can't use ${tag}${alg}Memory=$ignoreM because of maxMemory=${maxMemory}g limit.\n";
-    #
-    #} elsif (defined($ignoreT)) {
-    #    $err .= "-- Can't use ${tag}${alg}Threads=$ignoreT because of maxThreads=$maxThreads limit.\n";
-    #}
 
     #  Find task memory/thread settings that will maximize the number of cores running.  This used
     #  to also compute best as 'cores * memory' but that is better handled by ordering the task
@@ -263,7 +270,9 @@ sub getAllowedResources ($$$$) {
 
     foreach my $m (@taskMemory) {
         foreach my $t (@taskThreads) {
-
+            #if ($dbg && (($m > $maxMemory) || ($t > $maxThreads))) {
+            #    print STDERR "-- DEBUG Tested $tag$alg requesting $t cores and ${m}GB memory - rejected: limited to ${maxMemory}GB and $maxThreads cores.\n";
+            #}
             next  if ($m > $maxMemory);   #  Bail if either of the suggest settings are
             next  if ($t > $maxThreads);  #  larger than the maximum allowed.
 
@@ -287,9 +296,17 @@ sub getAllowedResources ($$$$) {
 
                 my $np = ($np_cpu < $np_mem) ? $np_cpu : $np_mem;
 
+                if ($dbg) {
+                    print STDERR "-- DEBUG  for $t threads and $m memory - class$ii can support $np_cpu jobs(cores) and $np_mem jobs(memory), so $np jobs.\n";
+                }
+
                 $processes += $np;
                 $cores     += $np * $t;
                 $memory    += $np * $m;
+            }
+
+            if ($dbg) {
+                print STDERR "-- DEBUG Tested $tag$alg requesting $t cores and ${m}GB memory and found $cores could be used.\n";
             }
 
             #  If no cores, then all machines were too small.
@@ -307,6 +324,8 @@ sub getAllowedResources ($$$$) {
     }
 
     if (!defined($bestCoresM)) {
+        getAllowedResources($tag, $alg, $err, $all, 1)  if (!defined($dbg));
+
         print STDERR "--\n";
         print STDERR "-- Task $tag$alg can't run on any available machines.\n";
         print STDERR "-- It is requesting ", getGlobal("${tag}${alg}Memory"), " GB memory and ", getGlobal("${tag}${alg}Threads"), " threads.\n";
@@ -362,27 +381,28 @@ sub getAllowedResources ($$$$) {
 
     my $nam;
 
-    if    ($alg eq "bat")      {  $nam = "bogart (unitigger)"; }
-    elsif ($alg eq "cns")      {  $nam = "utgcns (consensus)"; }
-    elsif ($alg eq "cor")      {  $nam = "falcon_sense (read correction)"; }
-    elsif ($alg eq "meryl")    {  $nam = "meryl (k-mer counting)"; }
+    if    ($alg eq "bat")      {  $nam = "bogart"; }
+    elsif ($alg eq "cns")      {  $nam = "consensus"; }
+    elsif ($alg eq "cor")      {  $nam = "falcon_sense"; }
+    elsif ($alg eq "meryl")    {  $nam = "meryl"; }
     elsif ($alg eq "oea")      {  $nam = "overlap error adjustment"; }
-    elsif ($alg eq "ovb")      {  $nam = "overlap store parallel bucketizer"; }
-    elsif ($alg eq "ovs")      {  $nam = "overlap store parallel sorting"; }
-    elsif ($alg eq "red")      {  $nam = "read error detection (overlap error adjustment)"; }
-    elsif ($alg eq "mhap")     {  $nam = "mhap (overlapper)"; }
-    elsif ($alg eq "mmap")     {  $nam = "minimap (overlapper)"; }
-    elsif ($alg eq "maln")     {  $nam = "minialign (overlapper)"; }
-    elsif ($alg eq "ovl")      {  $nam = "overlapper"; }
+    elsif ($alg eq "ovb")      {  $nam = "ovStore bucketizer"; }
+    elsif ($alg eq "ovs")      {  $nam = "ovStore sorting"; }
+    elsif ($alg eq "red")      {  $nam = "read error detection"; }
+    elsif ($alg eq "mhap")     {  $nam = "mhap ($tag)"; }
+    elsif ($alg eq "mmap")     {  $nam = "minimap ($tag)"; }
+    elsif ($alg eq "maln")     {  $nam = "minialign ($tag)"; }
+    elsif ($alg eq "ovl")      {  $nam = "overlapper ($tag)"; }
     else {
         caFailure("unknown task '$alg' in getAllowedResources().", undef);
     }
 
-    $all .= "-- Allowed to";
-    $all .= " run " . substr("   $concurrent", -3) . " job" . (($concurrent == 1) ? " " : "s") . " concurrently,"  if (defined($concurrent));
-    $all .= " run under grid control,"                                                                             if (!defined($concurrent));
-    $all .= " and use up to " . substr("   $taskThreads", -3) . " compute thread" . (($taskThreads == 1) ? " " : "s");
-    $all .= " and " . substr("   $taskMemory", -4) . " GB memory for stage '$nam'.\n";
+    my $job = substr("    $concurrent",  -3) . " job" . (($concurrent == 1) ? " " : "s");
+    my $thr = substr("    $taskThreads", -3) . " CPU" . (($taskThreads == 1) ? " " : "s");
+    my $mem = substr("    $taskMemory",  -4) . " GB";
+    
+    $all .= "-- Run $job concurrently using $mem and $thr for stage '$nam'.\n"   if ( defined($concurrent));
+    $all .= "-- Run under grid control using $mem and $thr for stage '$nam'.\n"   if (!defined($concurrent));
 
     return($err, $all);
 }
@@ -682,26 +702,43 @@ sub configureAssembler () {
     my $err;
     my $all;
 
-    ($err, $all) = getAllowedResources("",    "bat",      $err, $all);
-    ($err, $all) = getAllowedResources("cor", "mhap",     $err, $all);
-    ($err, $all) = getAllowedResources("obt", "mhap",     $err, $all);
-    ($err, $all) = getAllowedResources("utg", "mhap",     $err, $all);
-    ($err, $all) = getAllowedResources("",    "red",      $err, $all);
-    ($err, $all) = getAllowedResources("",    "oea",      $err, $all);
-    ($err, $all) = getAllowedResources("",    "cns",      $err, $all);
+    ($err, $all) = getAllowedResources("",    "meryl",    $err, $all);
+
+    ($err, $all) = getAllowedResources("cor", "mhap",     $err, $all)   if (getGlobal("corOverlapper") eq "mhap");
+    ($err, $all) = getAllowedResources("cor", "mmap",     $err, $all)   if (getGlobal("corOverlapper") eq "minimap");
+    ($err, $all) = getAllowedResources("cor", "maln",     $err, $all)   if (getGlobal("corOverlapper") eq "minialign");
+    ($err, $all) = getAllowedResources("cor", "ovl",      $err, $all)   if (getGlobal("corOverlapper") eq "ovl");
+
+    ($err, $all) = getAllowedResources("obt", "mhap",     $err, $all)   if (getGlobal("obtOverlapper") eq "mhap");
+    ($err, $all) = getAllowedResources("obt", "mmap",     $err, $all)   if (getGlobal("obtOverlapper") eq "minimap");
+    ($err, $all) = getAllowedResources("obt", "maln",     $err, $all)   if (getGlobal("obtOverlapper") eq "minialign");
+    ($err, $all) = getAllowedResources("obt", "ovl",      $err, $all)   if (getGlobal("obtOverlapper") eq "ovl");
+
+    ($err, $all) = getAllowedResources("utg", "mhap",     $err, $all)   if (getGlobal("utgOverlapper") eq "mhap");
+    ($err, $all) = getAllowedResources("utg", "mmap",     $err, $all)   if (getGlobal("utgOverlapper") eq "minimap");
+    ($err, $all) = getAllowedResources("utg", "maln",     $err, $all)   if (getGlobal("utgOverlapper") eq "minialign");
+    ($err, $all) = getAllowedResources("utg", "ovl",      $err, $all)   if (getGlobal("utgOverlapper") eq "ovl");
+
+    ($err, $all) = getAllowedResources("",    "cor",      $err, $all);
+
     ($err, $all) = getAllowedResources("",    "ovb",      $err, $all);
     ($err, $all) = getAllowedResources("",    "ovs",      $err, $all);
-    ($err, $all) = getAllowedResources("cor", "ovl",      $err, $all);
-    ($err, $all) = getAllowedResources("obt", "ovl",      $err, $all);
-    ($err, $all) = getAllowedResources("utg", "ovl",      $err, $all);
-    ($err, $all) = getAllowedResources("",    "meryl",    $err, $all);
-    ($err, $all) = getAllowedResources("",    "cor",      $err, $all);
-    ($err, $all) = getAllowedResources("cor", "mmap",     $err, $all);
-    ($err, $all) = getAllowedResources("obt", "mmap",     $err, $all);
-    ($err, $all) = getAllowedResources("utg", "mmap",     $err, $all);
-    ($err, $all) = getAllowedResources("cor", "maln",     $err, $all);
-    ($err, $all) = getAllowedResources("obt", "maln",     $err, $all);
-    ($err, $all) = getAllowedResources("utg", "maln",     $err, $all);
+
+    ($err, $all) = getAllowedResources("",    "red",      $err, $all);
+    ($err, $all) = getAllowedResources("",    "oea",      $err, $all);
+
+    ($err, $all) = getAllowedResources("",    "bat",      $err, $all);
+
+    ($err, $all) = getAllowedResources("",    "cns",      $err, $all);
+
+    #  Check some minimums.
+
+    if ((getGlobal("ovsMemory") =~ m/^([0123456789.]+)-*[0123456789.]*$/) &&
+        ($1 < 0.25)) {
+        caExit("ovsMemory must be at least 0.25g or 256m", undef);
+    }
+
+    #  2017-02-21 -- not sure why $err is being reported here if it doesn't stop.  What's in it?
 
     print STDERR "--\n" if (defined($err));
     print STDERR $err   if (defined($err));

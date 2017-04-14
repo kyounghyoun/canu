@@ -38,7 +38,7 @@
 class ovStoreHistogram {
 public:
   ovStoreHistogram();                                //  Used when loading data, user must loadData() later
-  ovStoreHistogram(gkStore *gkp, char *path);        //  Used when loading data, calls loadData() for you
+  ovStoreHistogram(char *path);                      //  Used when loading data, calls loadData() for you
   ovStoreHistogram(gkStore *gkp, ovFileType type);   //  Used when writing ovFile
   ~ovStoreHistogram();
 
@@ -74,7 +74,7 @@ public:
   //  In an ovStore, load the histogram saved in a file, and add it to our current data.
 
   void      saveData(char *prefix);
-  void      loadData(char *prefix);
+  void      loadData(char *prefix, uint32 maxIID=UINT32_MAX);
 
   //  Remove data associated with some prefix.
 

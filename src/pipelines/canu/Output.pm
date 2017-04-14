@@ -49,141 +49,167 @@ use File::Copy;
 use canu::Defaults;
 use canu::Execution;
 use canu::HTML;
+use canu::Grid_Cloud;
 
 
-#  In this module, the inputs are read from $wrk (the local work directory), and the output are
-#  written to $WRK (the root work directory).  This is a change from CA8 where outputs
-#  were written to the 9-terminator directory.
 
-
-sub generateOutputs ($$) {
-    my $WRK     = shift @_;           #  Root work directory (the -d option to canu)
-    my $wrk     = "$WRK/unitigging";  #  Local work directory
+sub generateOutputs ($) {
     my $asm     = shift @_;
     my $bin     = getBinDirectory();
     my $cmd;
 
     my $type    = "fasta";  #  Should probably be an option.
 
-    goto allDone   if (skipStage($WRK, $asm, "generateOutputs") == 1);
+    goto allDone   if (skipStage($asm, "generateOutputs") == 1);
 
     #  Layouts
 
-    if (! -e "$WRK/$asm.contigs.layout") {
-        $cmd  = "$bin/tgStoreDump \\\n";
-        $cmd .= "  -G $wrk/$asm.gkpStore \\\n";
-        $cmd .= "  -T $wrk/$asm.ctgStore 2 \\\n";
-        $cmd .= "  -o $WRK/$asm.contigs \\\n";
-        $cmd .= "  -layout \\\n";
-        $cmd .= "> $WRK/$asm.contigs.layout.err 2>&1";
+    if (! fileExists("$asm.contigs.layout")) {
+        fetchStore("unitigging/$asm.gkpStore");
+        fetchFile("unitigging/$asm.ctgStore/seqDB.v002.dat");
+        fetchFile("unitigging/$asm.ctgStore/seqDB.v002.tig");
 
-        if (runCommand($wrk, $cmd)) {
-            caExit("failed to output contig layouts", "$WRK/$asm.contigs.layout.err");
+        $cmd  = "$bin/tgStoreDump \\\n";
+        $cmd .= "  -G ./unitigging/$asm.gkpStore \\\n";
+        $cmd .= "  -T ./unitigging/$asm.ctgStore 2 \\\n";
+        $cmd .= "  -o ./$asm.contigs \\\n";
+        $cmd .= "  -layout \\\n";
+        $cmd .= "> ./$asm.contigs.layout.err 2>&1";
+
+        if (runCommand(".", $cmd)) {
+            caExit("failed to output contig layouts", "$asm.contigs.layout.err");
         }
 
-        unlink "$WRK/$asm.contigs.layout.err";
+        unlink "$asm.contigs.layout.err";
+
+        stashFile("$asm.contigs.layout");
     }
 
-    if (! -e "$WRK/$asm.unitigs.layout") {
-        $cmd  = "$bin/tgStoreDump \\\n";
-        $cmd .= "  -G $wrk/$asm.gkpStore \\\n";
-        $cmd .= "  -T $wrk/$asm.utgStore 2 \\\n";
-        $cmd .= "  -o $WRK/$asm.unitigs \\\n";
-        $cmd .= "  -layout \\\n";
-        $cmd .= "> $WRK/$asm.unitigs.layout.err 2>&1";
+    if (! fileExists("$asm.unitigs.layout")) {
+        fetchStore("unitigging/$asm.gkpStore");
 
-        if (runCommand($wrk, $cmd)) {
-            caExit("failed to output unitig layouts", "$WRK/$asm.unitigs.layout.err");
+        fetchFile("unitigging/$asm.utgStore/seqDB.v001.dat");   #  Why is this needed?
+        fetchFile("unitigging/$asm.utgStore/seqDB.v001.tig");
+
+        fetchFile("unitigging/$asm.utgStore/seqDB.v002.dat");
+        fetchFile("unitigging/$asm.utgStore/seqDB.v002.tig");
+
+        $cmd  = "$bin/tgStoreDump \\\n";
+        $cmd .= "  -G ./unitigging/$asm.gkpStore \\\n";
+        $cmd .= "  -T ./unitigging/$asm.utgStore 2 \\\n";
+        $cmd .= "  -o ./$asm.unitigs \\\n";
+        $cmd .= "  -layout \\\n";
+        $cmd .= "> ./$asm.unitigs.layout.err 2>&1";
+
+        if (runCommand(".", $cmd)) {
+            caExit("failed to output unitig layouts", "$asm.unitigs.layout.err");
         }
 
-        unlink "$WRK/$asm.unitigs.layout.err";
+        unlink "$asm.unitigs.layout.err";
+
+        stashFile("$asm.unitigs.layout");
     }
 
     #  Sequences
 
-    foreach my $tt ("unassembled", "bubbles", "contigs") {
-        if (! -e "$WRK/$asm.$tt.$type") {
+    foreach my $tt ("unassembled", "contigs") {
+        if (! fileExists("$asm.$tt.$type")) {
+            fetchStore("unitigging/$asm.gkpStore");
+            fetchFile("unitigging/$asm.ctgStore/seqDB.v002.dat");
+            fetchFile("unitigging/$asm.ctgStore/seqDB.v002.tig");
+
             $cmd  = "$bin/tgStoreDump \\\n";
-            $cmd .= "  -G $wrk/$asm.gkpStore \\\n";
-            $cmd .= "  -T $wrk/$asm.ctgStore 2 \\\n";
+            $cmd .= "  -G ./unitigging/$asm.gkpStore \\\n";
+            $cmd .= "  -T ./unitigging/$asm.ctgStore 2 \\\n";
             $cmd .= "  -consensus -$type \\\n";
             $cmd .= "  -$tt \\\n";
-            $cmd .= "> $WRK/$asm.$tt.$type\n";
-            $cmd .= "2> $WRK/$asm.$tt.err";
+            $cmd .= "> ./$asm.$tt.$type\n";
+            $cmd .= "2> ./$asm.$tt.err";
 
-            if (runCommand($WRK, $cmd)) {
-                caExit("failed to output $tt consensus sequences", "$WRK/$asm.$tt.err");
+            if (runCommand(".", $cmd)) {
+                caExit("failed to output $tt consensus sequences", "$asm.$tt.err");
             }
 
-            unlink "$WRK/$asm.$tt.err";
+            unlink "$asm.$tt.err";
+
+            stashFile("$asm.$tt.$type");
         }
     }
 
-    if (! -e "$WRK/$asm.unitigs.$type") {
+    if (! fileExists("$asm.unitigs.$type")) {
+        fetchStore("unitigging/$asm.gkpStore");
+        fetchFile("unitigging/$asm.utgStore/seqDB.v002.dat");
+        fetchFile("unitigging/$asm.utgStore/seqDB.v002.tig");
+
         $cmd  = "$bin/tgStoreDump \\\n";
-        $cmd .= "  -G $wrk/$asm.gkpStore \\\n";
-        $cmd .= "  -T $wrk/$asm.utgStore 2 \\\n";
+        $cmd .= "  -G ./unitigging/$asm.gkpStore \\\n";
+        $cmd .= "  -T ./unitigging/$asm.utgStore 2 \\\n";
         $cmd .= "  -consensus -$type \\\n";
         $cmd .= "  -contigs \\\n";
-        $cmd .= "> $WRK/$asm.unitigs.$type\n";
-        $cmd .= "2> $WRK/$asm.unitigs.err";
+        $cmd .= "> ./$asm.unitigs.$type\n";
+        $cmd .= "2> ./$asm.unitigs.err";
 
-        if (runCommand($WRK, $cmd)) {
-            caExit("failed to output unitig consensus sequences", "$WRK/$asm.unitigs.err");
+        if (runCommand(".", $cmd)) {
+            caExit("failed to output unitig consensus sequences", "$asm.unitigs.err");
         }
 
-        unlink "$WRK/$asm.unitigs.err";
+        unlink "$asm.unitigs.err";
+
+        stashFile("$asm.unitigs.$type");
     }
 
     #  Graphs
 
-    if ((! -e "$WRK/$asm.contigs.gfa") &&
-        (  -e "$wrk/4-unitigger/$asm.contigs.gfa")) {
-        copy("$wrk/4-unitigger/$asm.contigs.gfa", "$WRK/$asm.contigs.gfa");
+    if ((!fileExists("$asm.contigs.gfa")) &&
+        ( fileExists("unitigging/4-unitigger/$asm.contigs.gfa"))) {
+        fetchFile("unitigging/4-unitigger/$asm.contigs.gfa");
+        copy("unitigging/4-unitigger/$asm.contigs.gfa", "$asm.contigs.gfa");
+        stashFile("$asm.contigs.gfa");
     }
 
-    if ((! -e "$WRK/$asm.unitigs.gfa") &&
-        (  -e "$wrk/4-unitigger/$asm.unitigs.gfa")) {
-        copy("$wrk/4-unitigger/$asm.unitigs.gfa", "$WRK/$asm.unitigs.gfa");
+    if ((! fileExists("$asm.unitigs.gfa")) &&
+        (  fileExists("unitigging/4-unitigger/$asm.unitigs.gfa"))) {
+        fetchFile("unitigging/4-unitigger/$asm.unitigs.gfa");
+        copy("unitigging/4-unitigger/$asm.unitigs.gfa", "$asm.unitigs.gfa");
+        stashFile("$asm.unitigs.gfa");
     }
 
     #  User-supplied termination command.
 
     if (defined(getGlobal("onSuccess"))) {
         print STDERR "-- Running user-supplied termination command.\n";
-        runCommand($WRK, getGlobal("onSuccess") . " $asm");
+        runCommand(getGlobal("onExitDir"), getGlobal("onSuccess") . " $asm");
     }
 
 
   finishStage:
-    emitStage($WRK, $asm, "generateOutputs");
-    buildHTML($WRK, $asm, "utg");
+    emitStage($asm, "generateOutputs");
+    buildHTML($asm, "utg");
 
   allDone:
     print STDERR "--\n";
-    print STDERR "-- Assembly finished.\n";
+    print STDERR "-- Assembly '", getGlobal("onExitNam"), "' finished in '", getGlobal("onExitDir"), "'.\n";
     print STDERR "--\n";
-    print STDERR "-- Summary saved in '$WRK/unitigging.html'.\n";
+    print STDERR "-- Summary saved in 'unitigging.html'.\n";
     print STDERR "--\n";
     print STDERR "-- Sequences saved:\n";
-    print STDERR "--   Contigs       -> '$WRK/$asm.contigs.$type'\n";
-    print STDERR "--   Bubbles       -> '$WRK/$asm.bubbles.$type'  (DEPRECATED)\n";
-    print STDERR "--   Unassembled   -> '$WRK/$asm.unassembled.$type'\n";
-    print STDERR "--   Unitigs       -> '$WRK/$asm.unitigs.$type'\n";
+    print STDERR "--   Contigs       -> '$asm.contigs.$type'\n";
+    print STDERR "--   Unassembled   -> '$asm.unassembled.$type'\n";
+    print STDERR "--   Unitigs       -> '$asm.unitigs.$type'\n";
     print STDERR "--\n";
     print STDERR "-- Read layouts saved:\n";
-    print STDERR "--   Contigs       -> '$WRK/$asm.contigs.layout'.\n";
-    print STDERR "--   Unitigs       -> '$WRK/$asm.unitigs.layout'.\n";
+    print STDERR "--   Contigs       -> '$asm.contigs.layout'.\n";
+    print STDERR "--   Unitigs       -> '$asm.unitigs.layout'.\n";
     print STDERR "--\n";
     print STDERR "-- Graphs saved:\n";
-    print STDERR "--   Contigs       -> '$WRK/$asm.contigs.gfa'.\n";
-    print STDERR "--   Unitigs       -> '$WRK/$asm.unitigs.gfa'.\n";
+    print STDERR "--   Contigs       -> '$asm.contigs.gfa'.\n";
+    print STDERR "--   Unitigs       -> '$asm.unitigs.gfa'.\n";
     print STDERR "--\n";
     print STDERR "-- Bye.\n";
 
   finishStage:
-    emitStage($WRK, $asm, "outputSequence");
-    buildHTML($WRK, $asm, "utg");
+    emitStage($asm, "outputSequence");
+    buildHTML($asm, "utg");
 
   allDone:
 }

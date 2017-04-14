@@ -46,8 +46,7 @@ ovStoreHistogram::ovStoreHistogram() {
 }
 
 
-
-ovStoreHistogram::ovStoreHistogram(gkStore *gkp, char *path) {
+ovStoreHistogram::ovStoreHistogram(char *path) {
 
   _gkp = NULL;
 
@@ -169,7 +168,25 @@ ovStoreHistogram::addOverlap(ovOverlap *overlap) {
       memset(_opel[ev], 0, sizeof(uint32) * _opelLen);
     }
 
-    _opel[ev][len]++;
+    int32  alen = _gkp->gkStore_getRead(overlap->a_iid)->gkRead_sequenceLength();
+    int32  blen = _gkp->gkStore_getRead(overlap->b_iid)->gkRead_sequenceLength();
+
+    if (len < _opelLen) {
+      //fprintf(stderr, "overlap %8u (len %6d) %8u (len %6d) hangs %6lu %6d %6lu - %6lu %6d %6lu flip %lu\n",
+      //        overlap->a_iid, alen,
+      //        overlap->b_iid, blen,
+      //        overlap->dat.ovl.ahg5, (int32)alen - (int32)overlap->dat.ovl.ahg5 - (int32)overlap->dat.ovl.ahg3, overlap->dat.ovl.ahg3,
+      //        overlap->dat.ovl.bhg5, (int32)blen - (int32)overlap->dat.ovl.bhg5 - (int32)overlap->dat.ovl.bhg3, overlap->dat.ovl.bhg3,
+      //        overlap->dat.ovl.flipped);
+      _opel[ev][len]++;
+    } else {
+      fprintf(stderr, "overlap %8u (len %6d) %8u (len %6d) hangs %6lu %6d %6lu - %6lu %6d %6lu flip %lu -- BOGUS\n",
+              overlap->a_iid, alen,
+              overlap->b_iid, blen,
+              overlap->dat.ovl.ahg5, (int32)alen - (int32)overlap->dat.ovl.ahg5 - (int32)overlap->dat.ovl.ahg3, overlap->dat.ovl.ahg3,
+              overlap->dat.ovl.bhg5, (int32)blen - (int32)overlap->dat.ovl.bhg5 - (int32)overlap->dat.ovl.bhg3, overlap->dat.ovl.bhg3,
+              overlap->dat.ovl.flipped);
+    }
   }
 }
 
@@ -257,7 +274,7 @@ ovStoreHistogram::saveData(char *prefix) {
 
 
 void
-ovStoreHistogram::loadData(char *prefix) {
+ovStoreHistogram::loadData(char *prefix, uint32 maxIID) {
   char    name[FILENAME_MAX];
 
   //  Add in any overlaps-per-read data.
@@ -276,6 +293,9 @@ ovStoreHistogram::loadData(char *prefix) {
 
     if (_oprMax < inLen)                                                            //  Resize to fit those values
       resizeArray(_opr, _oprLen, _oprMax, inLen + inLen/2, resizeArray_copyData | resizeArray_clearNew);
+
+    if (maxIID < inLen)
+      fprintf(stderr, "WARNING: histogram file '%s' has data for %u reads, but only %u reads known.\n", name, inLen, maxIID);
 
     if (_oprLen < inLen)                                                            //  Remember the new length
       _oprLen = inLen;

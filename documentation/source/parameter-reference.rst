@@ -10,18 +10,71 @@ To get the most up-to-date options, run
 
 The default values below will vary based on the input data type and genome size.
 
-.. _genomeSize:
-
 Global Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The catch all category.
 
-errorRate <float=0.01>
-  The expected error rate, as fraction error, in the corrected reads, set by default based on data type, typically not changed by the user.
+.. _errorRate:
 
-genomeSize <float=unset>
-  An estimate of the size of the genome.  Common suffices are allowed, for example, 3.7m or 2.8g. Required.
+errorRate <float=unset> (OBSOLETE)
+  This parameter was removed on January 27th, 2016, and is valid only in Canu 1.4 or earlier.
+  Canu currently still accepts the :ref:`errorRate <errorRate>` parameter, but its use is strongly discouraged.
+
+  The expected error in a single corrected read.  The seven error rates were then set to three times
+  this value (except for :ref:`corErrorRate <corErrorRate>`).
+
+.. _rawErrorRate:
+
+rawErrorRate <float=unset>
+  The allowed difference in an overlap between two uncorrected reads, expressed as fraction error.
+  Sets :ref:`corOvlErrorRate` and :ref:`corErrorRate`.  The `rawErrorRate` typically does not need
+  to be modified.  It might need to be increased if very early reads are being assembled.  The
+  default is 0.300 For PacBio reads, and 0.500 for Nanopore reads.
+
+.. _correctedErrorRate:
+
+correctedErrorRate <float=unset>
+  The allowed difference in an overlap between two corrected reads, expressed as fraction error.  Sets :ref:`obtOvlErrorRate`, :ref:`utgOvlErrorRate`, :ref:`obtErrorRate`, :ref:`utgErrorRate`, and :ref:`cnsErrorRate`.
+  The `correctedErrorRate` can be adjusted to account for the quality of read correction, for the amount of divergence in the sample being
+  assembled, and for the amount of sequence being assembled.  The default is 0.045 for PacBio reads, and 0.144 for Nanopore reads.
+
+  For low coverage datasets (less than 30X), we recommend increasing `correctedErrorRate` slightly, by 1% or so.
+
+  For high-coverage datasets (more than 60X), we recommend decreasing `correctedErrorRate` slighly, by 1% or so.
+
+  Raising the `correctedErrorRate` will increase run time.  Likewise, decreasing `correctedErrorRate` will decrease run time, at the risk of missing overlaps and fracturing the assembly.
+
+.. _minReadLength:
+
+minReadLength <integer=1000>
+  Reads shorter than this are not loaded into the assembler.  Reads output by correction and
+  trimming that are shorter than this are discarded.
+
+  Must be no smaller than minOverlapLength.
+
+  If set high enough, the gatekeeper module will halt as too many of the input reads have been
+  discarded.  Set `stopOnReadQuality` to false to avoid this.
+
+.. _minOverlapLength:
+
+minOverlapLength <integer=500>
+  Overlaps shorter than this will not be discovered.  Smaller values can be used to overcome lack of
+  read coverage, but will also lead to false overlaps and potential misassemblies.  Larger values
+  will result in more correct assemblies, but more fragmented, assemblies.
+
+  Must be no bigger than minReadLength.
+
+.. _genomeSize:
+
+genomeSize <float=unset> *required*
+  An estimate of the size of the genome.  Common suffices are allowed, for example, 3.7m or 2.8g.
+
+  The genome size estimate is used to decide how many reads to correct (via the corOutCoverage_
+  parameter) and how sensitive the mhap overlapper should be (via the mhapSensitivity_
+  parameter). It also impacts some logging, in particular, reports of NG50 sizes.
+
+.. _canuIteration:
 
 canuIteration <internal parameter, do not use>
   Which parallel iteration is being attempted.
@@ -30,13 +83,24 @@ canuIterationMax <integer=2>
   Sometimes, jobs fail due to other jobs exhausting resources (memory), or by the node itself failing.  In this case, canu will launch the jobs
   again.  This parameter controls how many times it tries.
 
+.. _onSuccess:
+
 onSuccess <string=unset>
+  Execute the command supplied when Canu successfully completes an assembly.  The command will
+  execute in the <assembly-directory> (the -d option to canu) and will be supplied with the name of
+  the assembly (the -p option to canu) as its first and only parameter.
+
+.. _onFailure:
+
 onFailure <string=unset>
-  On success or failure, execute the command supplied.  The command will execute in the <assembly-directory> (the -d option to canu) and will be supplied with the name of the assembly (the -p option to canu) as its first and only parameter.
+  Execute the command supplied when Canu terminates abnormally.  The command will execute in the
+  <assembly-directory> (the -d option to canu) and will be supplied with the name of the assembly
+  (the -p option to canu) as its first and only parameter.
 
-  The 'onSuccess' command will run when canu finishes an assembly.
-
-  The 'onFailure' command will run when canu terminates abnormally.  There are two exceptions: if a 'spec' file cannot be read, and if canu tries to access an invalid parameter.  The former will be reported as a command line error, and canu will never start.  The latter should never occur (and, in fact, has never occurred) except when developers are developing the software.
+  There are two exceptions when the command is not executed: if a 'spec' file cannot be read, or if
+  canu tries to access an invalid parameter.  The former will be reported as a command line error,
+  and canu will never start.  The latter should never occur except when developers are developing
+  the software.
 
 
 Process Control
@@ -47,46 +111,22 @@ showNext <boolean=false>
   command, for example, checking the output of the previous command or preparing inputs for the
   next command, is still performed.
 
-stopBefore <string=undefined>
-  Stop processing just before this stage would execute.  The stage is configured, and the
-  command logged to the standard output, before stopping.  For grid-based stages, e.g., overlapper,
-  the grid submit command is reported.
-
-  If the stage has finished successfully, it will not stop.
-
-  Only one stage may be supplied to stopBefore.
-
-  Valid stages to stopBefore are:
-    - gatekeeper
-    - meryl
-    - overlap
-    - correction
-    - overlapErrorAdjustment
-    - trimReads
-    - splitReads
-    - unitig
-    - consensusConfigure
-    - consensus
-    - output
-
-  The default value is 'undef'.
-
 stopAfter <string=undefined>
-  Stop processing after this stage completes.
+  If set, Canu will stop processing after a specific stage in the pipeline finishes.
 
-  The stage will typically stop BEFORE a summary of its processing is reported in the canu chatter.
+  Valid values for ``stopAfter`` are:
 
-  Valid stages top stopAfter are:
-    - gatekeeper
-    - meryl
-    - overlapConfigure
-    - overlap
-    - correction
-    - unitig
-    - consensusConfigure
-    - consensus
-    - consensusLoad
-    - consensusFilter
+   - ``gatekeeper`` - stops after the reads are loaded into the assembler read database.
+   - ``meryl`` - stops after frequent kmers are tabulated.
+   - ``overlapConfigure`` - stops after overlap jobs are configured.
+   - ``overlap`` - stops after overlaps are generated, before they are loaded into the overlap database.
+   - ``overlapStoreConfigure`` - stops after the ``ovsMethod=parallel`` jobs are configured; has no impact for ``ovsMethod=sequential``.
+   - ``overlapStore`` - stops after overlaps are loaded into the overlap database.
+   - ``readCorrection`` - stops after corrected reads are generated.
+   - ``readTrimming`` - stops after trimmed reads are generated.
+   - ``unitig`` - stops after unitigs and contigs are created.
+   - ``consensusConfigure`` - stops after consensus jobs are configured.
+   - ``consensus`` - stops after consensus sequences are loaded into the databases.
 
 
 General Options
@@ -117,6 +157,36 @@ gnuplotImageFormat <string="png">
 
 gnuplotTested <boolean=false>
   If set, skip the tests to determine if gnuplot will run, and to decide the image type to generate.  This is used when gnuplot fails to run, or isn't even installed, and allows canu to continue execution without generating graphs.
+
+
+File Staging
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The correction stage of Canu requires random access to all the reads.  Performance is greatly
+improved if the gkpStore database of reads is copied locally to each node that computes corrected
+read consensus sequences.  This 'staging' is enabled by supplying a path name to fast local storage
+with the `stageDirectory` option, and, optionally, requesting access to that resource from the grid
+with the `gridEngineStageOption` option.
+
+stageDirectory <string=undefined>
+  A path to a directory local to each compute node.  The directory should use an environment
+  variable specific to the grid engine to ensure that it is unique to each task.
+
+  For example, in Sun Grid Engine, `/scratch/$JOB_ID-$SGE_TASK_ID` will use both the numeric
+  job ID and the numeric task ID.  In SLURM, `/scratch/$SLRUM_JOBID` accomplishes the same.
+
+  If specified on the command line, be sure to escape the dollar sign, otherwise the shell will try
+  to expand it before Canu sees the option: `stageDirectory=/scratch/\$JOB_ID-\$SGE_TASK_ID`.
+
+  If specified in a specFile, do not escape the dollar signs.
+
+gridEngineStageOption <string=undefined>
+  This string is passed to the job submission command, and is expected to request
+  local disk space on each node.  It is highly grid specific.  The string `DISK_SPACE`
+  will be replaced with the amount of disk space needed, in gigabytes.
+
+  On SLURM, an example is `--gres=lscratch:DISK_SPACE`
+
 
 Cleanup Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -159,8 +229,17 @@ algorithm.
 Overlapper Configuration, ovl Algorithm
 ---------------------------------------
 
+.. _corOvlErrorRate:
+.. _obtOvlErrorRate:
+.. _utgOvlErrorRate:
+.. _ovlErrorRate:
+
 {prefix}OvlErrorRate <float=unset>
   Overlaps above this error rate are not computed.
+  * `corOvlErrorRate` applies to overlaps generated for correcting reads;
+  * `obtOvlErrorRate` applied to overlaps generated for trimming reads;
+  * `utgOvlErrorRate` applies to overlaps generated for assembling reads.
+  These limits apply to the 'ovl' overlap algorithm and when alignments are computed for mhap overlaps with :ref:`mhapReAlign <mhapReAlign>`.
 
 {prefix}OvlFrequentMers <string=undefined>
   Do not seed overlaps with these kmers (fasta format).
@@ -201,12 +280,18 @@ Overlapper Configuration, mhap Algorithm
 {prefix}MhapMerSize <integer=unset>
   K-mer size for seeds in mhap.
 
+.. _mhapReAlign:
+
 {prefix}ReAlign <boolean=false>
-  Compute actual alignments from mhap overlaps; 'raw' from mhap output;
+  Compute actual alignments from mhap overlaps.
   uses either obtErrorRate or ovlErrorRate, depending on which overlaps are computed)
 
+.. _mhapSensitivity:
+
 {prefix}MhapSensitivity <string="normal">
-  Coarse sensitivity level: 'normal' or 'high' or 'fast'.
+  Coarse sensitivity level: 'low', 'normal' or 'high'.  Based on read coverage (which is impacted by
+  genomeSize), 'low' sensitivity is used if coverage is more than 60; 'normal' is used if coverage
+  is between 60 and 30, and 'high' is used for coverages less than 30.
 
 Overlapper Configuration, mhap Algorithm
 ----------------------------------------
@@ -216,10 +301,6 @@ Overlapper Configuration, mhap Algorithm
 
 {prefix}MMapMerSize <integer=unset>
   K-mer size for seeds in minimap.
-
-{prefix}ReAlign <boolean=false>
-  Compute actual alignments from minimap overlaps; 'raw' from mhap output;
-  uses either obtErrorRate or ovlErrorRate, depending on which overlaps are computed)
 
 Overlap Store
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -255,8 +336,10 @@ merylThreads <integer=unset>
 Overlap Based Trimming
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.. _obtErrorRate:
+
 obtErrorRate <float=unset>
-  Stringency of overlaps to use for trimming
+  Stringency of overlaps to use for trimming reads.
 
 trimReadsOverlap <integer=1>
   Minimum overlap between evidence to make contiguous trim.
@@ -385,85 +468,84 @@ assebmled, the type of processing desired, or the amount of comput resources ava
 enableOEA <boolean=true>
   Do overlap error adjustment - comprises two steps: read error detection (RED and overlap error adjustment (OEA
 
-WHERE IS OBT??
-
-
 Algorithm Execution Method
 --------------------------
 
-Each of the high compute stages can be computed either on a grid or in parallel on the local machine.
-Most algorithms will respect a given maximum memory usage.
-Most algorithms can support more than a single thread of computation.
-When the grid engine is not used, more than one task can be run at a time.
+Canu has a fairly sophisticated (or complicated, depending on if it is working or not) method for
+dividing large computes, such as read overlapping and consensus, into many smaller pieces and then
+running those pieces on a grid or in parallel on the local machine.  The size of each piece is
+generally determined by the amount of memory the task is allowed to use, and this memory size --
+actually a range of memory sizes -- is set based on the genomeSize parameter, but can be set
+explicitly by the user.  The same holds for the number of processors each task can use.
+For example, a genomeSize=5m would result in overlaps using between 4gb and
+8gb of memory, and between 1 and 8 processors.
 
-BUG:  Local execution doesn't pay attention to memory option.
+Given these requirements, Canu will pick a specific memory size and number of processors
+so that the maximum number of jobs will run at the same time.  In the overlapper example,
+if we are running on a machine with 32gb memory and 8 processors, it is not possible to run
+8 concurrent jobs that each require 8gb memory, but it is possible to run 4 concurrent jobs
+each using 6gb memory and 2 processors.
 
-For execution locally, three parameters describe the task:
+To completely specify how Canu runs algorithms, one needs to specify a maximum memory size, a
+maximum number of processors, and how many pieces to run at one time.  Users can set these manually
+through the {prefix}Memory, {prefix}Threads and {prefix}Concurrency options.  If they are not
+set, defaults are chosen based on genomeSize.
 
 {prefix}Concurrency <integer=unset>
   Set the number of tasks that can run at the same time, when running without grid support.
 
-  Available prefixes are:
-    - master
-    - cns
-    - cor
-    - cormhap
-    - obtmhap
-    - utgmhap
-    - corovl
-    - obtovl
-    - utgovl
-    - cormmap
-    - obtmmap
-    - utgmmap
-    - oea
-    - ovb
-    - ovs
-    - red
-
 {prefix}Threads <integer=unset>
   Set the number of compute threads used per task.
 
-  Available prefixes are:
-    - master
-    - bat
-    - cns
-    - cor
-    - cormhap
-    - obtmhap
-    - utgmhap
-    - corovl
-    - obtovl
-    - utgovl
-    - cormmap
-    - obtmmap
-    - utgmmap
-    - ovb
-    - ovs
-    - red
-    - oea
-
 {prefix}Memory <integer=unset>
-  Set the amount of memory, in GB, to use for each job in a task.
+  Set the amount of memory, in gigabytes, to use for each job in a task.
 
-  Available prefixes are:
-    - master
-    - bat
-    - ovb
-    - ovs
-    - cns
-    - cor
-    - cormhap
-    - obtmhap
-    - utgmhap
-    - corovl
-    - obtovl
-    - utgovl
-    - cormmap
-    - obtmmap
-    - utgmmap
-    - red
-    - oea
+Available prefixes are:
+
++-------+-----------+----------------------------------------+
+|    Prefix         | Algorithm                              |
++=======+===========+========================================+
+| cor   |           | | Overlap generation using the         |
++-------|           | | 'mhap' algorithm for                 |
+| obt   | mhap      | | 'cor'=correction,, 'obt'=trimming    |
++-------|           | | or 'utg'=assembly.                   |
+| utg   |           |                                        |
++-------+-----------+----------------------------------------+
+| cor   |           | | Overlap generation using the         |
++-------|           | | 'minimap' algorithm for              |
+| obt   | mmap      | | 'cor'=correction,, 'obt'=trimming    |
++-------|           | | or 'utg'=assembly.                   |
+| utg   |           |                                        |
++-------+-----------+----------------------------------------+
+| cor   |           | | Overlap generation using the         |
++-------|           | | 'overlapInCore' algorithm for        |
+| obt   | ovl       | | 'cor'=correction,, 'obt'=trimming    |
++-------|           | | or 'utg'=assembly.                   |
+| utg   |           |                                        |
++-------+-----------+----------------------------------------+
+|       | ovb       | Parallel overlap store bucketizing     |
++-------+-----------+----------------------------------------+
+|       | ovs       | Parallel overlap store bucket sorting  |
++-------+-----------+----------------------------------------+
+|       | cor       | Read correction                        |
++-------+-----------+----------------------------------------+
+|       | red       | Error detection in reads               |
++-------+-----------+----------------------------------------+
+|       | oea       | Error adjustment in overlaps           |
++-------+-----------+----------------------------------------+
+|       | bat       | Unitig/contig construction             |
++-------+-----------+----------------------------------------+
+|       | cns       | Unitig/contig consensus                |
++-------+-----------+----------------------------------------+
+
+For example, 'mhapMemory` would set the memory limit for computing overlaps with the mhap algorithm;
+'cormhapMemory' would set the memory limit only when mhap is used for generating overlaps used for
+correction.
+
+The 'minMemory', 'maxMemory', 'minThreads' and 'maxThreads' options will apply to all jobs, and
+can be used to artifically limit canu to a portion of the current machine.  In the overlapper
+example above, setting maxThreads=4 would result in two concurrent jobs instead of four.
+
 
 Overlap Error Adjustment
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -488,6 +570,11 @@ Unitigger
 unitigger <string="bogart">
   Which unitig construction algorithm to use.  Only "bogart" is supported.
 
+.. _utgErrorRate:
+
+utgErrorRate <float=unset>
+  Stringency of overlaps used for constructing contigs.  The `bogart` algorithm uses the distribution of overlap error rates to filter high error overlaps; `bogart` will never see overlaps with error higher than this parameter.
+
 batOptions <unset>
   Advanced options to bogart
 
@@ -508,28 +595,35 @@ cnsPartitionMin
 cnsMaxCoverage
   Limit unitig consensus to at most this coverage.
  
-cnsErrorRate
-  Possibly unused.
+.. _cnsErrorRate:
 
+cnsErrorRate
+  Inform the consensus genration algorithm of the amount of difference it should expect in a
+  read-to-read alignment.  Typically set to :ref:`utgOvlErrorRate <utgOvlErrorRate>`.  If set too
+  high, reads could be placed in an incorrect location, leading to errors in the consensus sequence.
+  If set too low, reads could be omitted from the consensus graph (or multialignment, depending on
+  algorithm), resulting in truncated consensus sequences.
+
+.. _correction:
 
 Read Correction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The first step in Canu is to find high-error overlaps and generate corrected sequences for subsequent assembly. This is currently the fastest step in Canu. By default, only the longest 40X of data (based on the specified genome size) is used for correction. Typically, some reads are trimmed during correction due to being chimeric or having erroneous sequence, resulting in a loss of 20-25% (30X output). You can force correction to be non-lossy by setting 
+The first step in Canu is to find high-error overlaps and generate corrected sequences for
+subsequent assembly. This is currently the fastest step in Canu. By default, only the longest 40X of
+data (based on the specified genome size) is used for correction. Typically, some reads are trimmed
+during correction due to being chimeric or having erroneous sequence, resulting in a loss of 20-25%
+(30X output). You can force correction to be non-lossy by setting `corMinCoverage=0`, in which case
+the corrected reads output will be the same length as the input data, keeping any high-error
+unsupported bases. Canu will trim these in downstream steps before assembly.
 
-::
+If you have a dataset with uneven coverage or small plasmids, correcting the longest 40X may not
+give you sufficient coverage of your genome/plasmid. In these cases, you can set
+`corOutCoverage=999`, or any value greater than your total input coverage which will correct and
+assemble all input data, at the expense of runtime.
 
-   corMinCoverage=0
-
-In which case the corrected reads output will be the same length as the input data, keeping any high-error unsupported bases. Canu will trim these in downstream steps before assembly.
-
-If you have a dataset with uneven coverage or small plasmids, correcting the longest 40X may not give you sufficient coverage of your genome/plasmid. In these cases, you can set 
-
-::
-
-   corOutCoverage=400
-
-Or any large value greater than your total input coverage which will correct and assemble all input data, at the expense of runtime.
+corErrorRate <integer=unset>
+  Do not use overlaps with error rate higher than this (estimated error rate for `mhap` and `minimap` overlaps).
 
 corConsensus <string="falconpipe">
   Which algorithm to use for computing read consensus sequences.  Only 'falcon' and 'falconpipe' are supported.
@@ -551,14 +645,13 @@ corMaxEvidenceCoverageGlobal <string="1.0x">
 corMaxEvidenceCoverageLocal <string="2.0x">
   Limit reads being corrected to at most this much evidence coverage; default: 10 * estimated coverage
 
+.. _corOutCoverage:
+
 corOutCoverage <integer=40>
   Only correct the longest reads up to this coverage; default 40
 
 corFilter <string="expensive">
   Method to filter short reads from correction; 'quick' or 'expensive' or 'none'
-
-falconSense
-  Path to fc_consensus.py or falcon_sense.bin
 
 Output Filtering
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

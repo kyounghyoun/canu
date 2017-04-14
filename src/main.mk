@@ -48,7 +48,6 @@ SOURCES      := AS_global.C \
                 AS_UTL/kMer.C \
                 \
                 falcon_sense/libfalcon/falcon.C \
-                falcon_sense/libfalcon/kmer_lookup.C \
                 \
                 stores/gkStore.C \
                 stores/gkStoreEncode.C \
@@ -107,7 +106,39 @@ SOURCES      := AS_global.C \
                 utgcns/libcns/unitigConsensus.C \
                 utgcns/libpbutgcns/Alignment.C	\
                 utgcns/libpbutgcns/AlnGraphBoost.C  \
-                utgcns/libNDFalcon/dw.C
+                utgcns/libNDFalcon/dw.C \
+                \
+                meryl/libkmer/existDB-create-from-fasta.C \
+                meryl/libkmer/existDB-create-from-meryl.C \
+                meryl/libkmer/existDB-create-from-sequence.C \
+                meryl/libkmer/existDB-state.C \
+                meryl/libkmer/existDB.C \
+                meryl/libkmer/positionDB-access.C \
+                meryl/libkmer/positionDB-dump.C \
+                meryl/libkmer/positionDB-file.C \
+                meryl/libkmer/positionDB-mismatch.C \
+                meryl/libkmer/positionDB-sort.C \
+                meryl/libkmer/positionDB.C
+
+
+
+ifeq (${BUILDSTACKTRACE}, 1)
+SOURCES      += AS_UTL/libbacktrace/atomic.c \
+                AS_UTL/libbacktrace/backtrace.c \
+                AS_UTL/libbacktrace/dwarf.c \
+                AS_UTL/libbacktrace/elf.c \
+                AS_UTL/libbacktrace/fileline.c \
+                AS_UTL/libbacktrace/mmap.c \
+                AS_UTL/libbacktrace/mmapio.c \
+                AS_UTL/libbacktrace/posix.c \
+                AS_UTL/libbacktrace/print.c \
+                AS_UTL/libbacktrace/simple.c \
+                AS_UTL/libbacktrace/sort.c \
+                AS_UTL/libbacktrace/state.c \
+                AS_UTL/libbacktrace/unknown.c
+endif
+
+
 
 SRC_INCDIRS  := . \
                 AS_UTL \
@@ -148,6 +179,10 @@ SUBMAKEFILES := stores/gatekeeperCreate.mk \
                 meryl/maskMers.mk \
                 meryl/simple.mk \
                 meryl/estimate-mer-threshold.mk \
+                meryl/existDB.mk \
+                meryl/positionDB.mk \
+                \
+                merTrim/merTrim.mk \
                 \
                 overlapInCore/overlapInCore.mk \
                 overlapInCore/overlapInCorePartition.mk \
@@ -184,6 +219,8 @@ SUBMAKEFILES := stores/gatekeeperCreate.mk \
                 erateEstimate/erateEstimate.mk \
                 \
                 utgcns/utgcns.mk \
+                \
+                utgcns/alignGFA.mk \
                 \
                 fastq-utilities/fastqAnalyze.mk \
                 fastq-utilities/fastqSample.mk \

@@ -304,7 +304,7 @@ dumpTigs(gkStore *UNUSED(gkpStore), tgStore *tigStore, tgFilter &filter, bool us
 
 
 void
-dumpConsensus(gkStore *UNUSED(gkpStore), tgStore *tigStore, tgFilter &filter, bool useGapped, char cnsFormat) {
+dumpConsensus(gkStore *UNUSED(gkpStore), tgStore *tigStore, tgFilter &filter, bool useGapped, bool useReverse, char cnsFormat) {
 
   for (uint32 ti=0; ti<tigStore->numTigs(); ti++) {
     if (tigStore->isDeleted(ti))
@@ -322,6 +322,9 @@ dumpConsensus(gkStore *UNUSED(gkpStore), tgStore *tigStore, tgFilter &filter, bo
       tigStore->unloadTig(ti);
       continue;
     }
+
+    if (useReverse)
+      tig->reverseComplement();
 
     switch (cnsFormat) {
       case 'A':
@@ -1011,6 +1014,7 @@ main (int argc, char **argv) {
   uint32        dumpType          = DUMP_UNSET;
 
   bool          useGapped         = false;
+  bool          useReverse        = false;
 
   char          cnsFormat         = 'A';  //  Or 'Q' for FASTQ
 
@@ -1120,6 +1124,9 @@ main (int argc, char **argv) {
     else if (strcmp(argv[arg], "-gapped") == 0)
       useGapped = true;
 
+    else if (strcmp(argv[arg], "-reverse") == 0)
+      useReverse = true;
+
     else if (strcmp(argv[arg], "-fasta") == 0)
       cnsFormat = 'A';
     else if (strcmp(argv[arg], "-fastq") == 0)
@@ -1188,6 +1195,7 @@ main (int argc, char **argv) {
     fprintf(stderr, "\n");
     fprintf(stderr, "  -consensus [opts]       the consensus sequence, with options:\n");
     fprintf(stderr, "                            -gapped           report the gapped (multialignment) consensus sequence\n");
+    fprintf(stderr, "                            -reverse          reverse complement the sequence\n");
     fprintf(stderr, "                            -fasta            report sequences in FASTA format (the default)\n");
     fprintf(stderr, "                            -fastq            report sequences in FASTQ format\n");
     fprintf(stderr, "\n");
@@ -1249,7 +1257,7 @@ main (int argc, char **argv) {
   if (filter.tigIDend == UINT32_MAX)
     filter.tigIDend = nTigs-1;
 
-  if (nTigs <= filter.tigIDend) {
+  if ((nTigs > 0) && (nTigs <= filter.tigIDend)) {
     fprintf(stderr, "WARNING: adjusting tig ID range from " F_U32 "-" F_U32 " to " F_U32 "-" F_U32 " as there are only " F_U32 " tigs in the store.\n",
             filter.tigIDbgn, filter.tigIDend, filter.tigIDbgn, nTigs-1, nTigs);
     filter.tigIDend = nTigs - 1;
@@ -1263,7 +1271,7 @@ main (int argc, char **argv) {
     filter.tigIDbgn = x;
   }
 
-  if (nTigs <= filter.tigIDbgn)
+  if ((nTigs > 0) && (nTigs <= filter.tigIDbgn))
     fprintf(stderr, "ERROR: only " F_U32 " tigs in the store (IDs 0-" F_U32 " inclusive); can't dump requested range -t " F_U32 "-" F_U32 "\n",
             nTigs,
             nTigs-1,
@@ -1279,7 +1287,7 @@ main (int argc, char **argv) {
       dumpTigs(gkpStore, tigStore, filter, useGapped);
       break;
     case DUMP_CONSENSUS:
-      dumpConsensus(gkpStore, tigStore, filter, useGapped, cnsFormat);
+      dumpConsensus(gkpStore, tigStore, filter, useGapped, useReverse, cnsFormat);
       break;
     case DUMP_LAYOUT:
       dumpLayout(gkpStore, tigStore, filter, useGapped, outPrefix);

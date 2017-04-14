@@ -75,6 +75,7 @@
 // for pbdagcon
 #include "Alignment.H"
 #include "AlnGraphBoost.H"
+#include "edlib.H"
 #include "dw.H"
 
 #include "NDalign.H"
@@ -258,7 +259,8 @@ unitigConsensus::generate(tgTig                     *tig_,
 
 
 bool
-unitigConsensus::generatePBDAG(tgTig                     *tig_,
+unitigConsensus::generatePBDAG(char aligner,
+                               tgTig                     *tig_,
                                map<uint32, gkRead *>     *inPackageRead_,
                                map<uint32, gkReadData *> *inPackageReadData_) {
   tig      = tig_;
@@ -361,42 +363,61 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
 #endif
 
     dagcon::Alignment aln;
-
-    aln.start = utgpos[i].min();
-    aln.end   = utgpos[i].max();
+    NDalignment::NDalignResult ndaln;
+    EdlibAlignResult align;
+    int32 padding = (aligner == 'E' ? (int32)round((double)(utgpos[i].max() - utgpos[i].min()) * errorRate) + 1 : 0);
+    aln.start = max((int32)0, (int32)utgpos[i].min() - padding);
+    aln.end   = min((int32)utg.seq.size(), (int32)utgpos[i].max() + padding);
     aln.frgid = utgpos[i].ident();
     aln.qstr  = string(fragment);
-    aln.tstr  = utg.seq.substr(aln.start, aln.end-aln.start);
 
-    NDalignment::NDalignResult ndaln;
+    aln.tstr  = utg.seq.substr(aln.start, aln.end-aln.start);
 
     uint32  aLen = aln.qstr.size();
     uint32  bLen = aln.tstr.size();
 
     uint32  bandTolerance = 150;
-    bool    aligned       = NDalignment::align(aln.qstr.c_str(), aln.qstr.size(),
+    bool aligned = false;
+    if (aligner == 'E') {
+       align = edlibAlign(aln.qstr.c_str(), aln.qstr.size()-1, aln.tstr.c_str(), aln.tstr.size()-1, edlibNewAlignConfig(bandTolerance, EDLIB_MODE_HW, EDLIB_TASK_PATH));
+       aligned = (align.numLocations >= 1);
+    } else {
+       aligned = NDalignment::align(aln.qstr.c_str(), aln.qstr.size(),
                                                aln.tstr.c_str(), aln.tstr.size(),
                                                bandTolerance,
                                                true,
                                                ndaln);
-
-    while ((aligned == false) && (bandTolerance < errorRate * (aLen + bLen))) {
-      bandTolerance *= 4;
-      fprintf(stderr, "generatePBDAG()-- retry with bandTolerance = %d\n",
-              bandTolerance);
-      aligned = NDalignment::align(aln.qstr.c_str(), aln.qstr.size(),
-                                   aln.tstr.c_str(), aln.tstr.size(),
-                                   bandTolerance,
-                                   true,
-                                   ndaln);
-
     }
 
-    double errorRateAln = (ndaln._size > 0) ? ((double)ndaln._dist / ndaln._size) : 1.0;
+    while ((aligned == false) && (bandTolerance < errorRate * (aLen + bLen))) {
+       bandTolerance *= 2;
+       if (aligner == 'E') 
+          edlibFreeAlignResult(align);
+ 
+       fprintf(stderr, "generatePBDAG()-- retry with bandTolerance = %d\n",
+              bandTolerance);
+
+       if (aligner == 'E') {
+          align = edlibAlign(aln.qstr.c_str(), aln.qstr.size()-1, aln.tstr.c_str(), aln.tstr.size()-1, edlibNewAlignConfig(bandTolerance, EDLIB_MODE_HW, EDLIB_TASK_PATH));
+          aligned = (align.numLocations >= 1);
+       } else {
+          aligned = NDalignment::align(aln.qstr.c_str(), aln.qstr.size(),
+                                       aln.tstr.c_str(), aln.tstr.size(),
+                                       bandTolerance,
+                                       true,
+                                       ndaln);
+       }
+    }
+
+    double errorRateAln = 0;
+    if (aligner == 'E')
+       errorRateAln = (align.alignmentLength > 0) ? ((double)align.editDistance / align.alignmentLength) : 1.0;
+    else
+       errorRateAln = (ndaln._size > 0) ? ((double)ndaln._dist / ndaln._size) : 1.0;
 
     if ((aligned == true) && (errorRateAln > errorRate)) {
       fprintf(stderr, "generatePBDAG()-- error rate too high distance=%5d size=%5d, %f > %f\n",
-              ndaln._dist, ndaln._size, errorRateAln, errorRate);
+              align.editDistance, align.alignmentLength, errorRateAln, errorRate);
       aligned = false;
     }
 
@@ -410,25 +431,39 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
               i, utgpos[i].ident(), utgpos[i].min(), utgpos[i].max());
 
       cnspos[i].setMinMax(0, 0);
-
+      if (aligner == 'E')
+          edlibFreeAlignResult(align);
       continue;
     }
 
-
-    fprintf(stderr, "generatePBDAG()-- aligned             distance=%5d size=%5d, %f < %f\n",
-            ndaln._dist, ndaln._size,
-            (double) ndaln._dist / ndaln._size,
+    if (aligner == 'E') {
+       fprintf(stderr, "generatePBDAG()-- aligned             distance=%5d size=%5d, %f < %f\n",
+            align.editDistance, align.alignmentLength,
+            (double) align.editDistance / align.alignmentLength,
             errorRate);
 
-    aln.start += ndaln._tgt_bgn;
-    aln.end = aln.start + ndaln._tgt_end;
+       char *tgt_aln_str = new char[align.alignmentLength+1];
+       char *qry_aln_str = new char[align.alignmentLength+1];
+       edlibAlignmentToStrings(align.alignment, align.alignmentLength, align.startLocations[0], align.endLocations[0]+1, 0, aln.qstr.length(), aln.tstr.c_str(), aln.qstr.c_str(), tgt_aln_str, qry_aln_str);
+
+       aln.start += align.startLocations[0];
+       aln.end = aln.start + (align.endLocations[0] - align.startLocations[0]) + 1;
+       aln.qstr = std::string(qry_aln_str);
+       aln.tstr = std::string(tgt_aln_str);
+
+       edlibFreeAlignResult(align);
+       delete[] tgt_aln_str;
+       delete[] qry_aln_str;
+    } else {
+       aln.start += ndaln._tgt_bgn;
+       aln.end = aln.start + (ndaln._tgt_end - ndaln._tgt_bgn) - 1;
+       aln.qstr = std::string(ndaln._qry_aln_str);
+       aln.tstr = std::string(ndaln._tgt_aln_str);
+    } 
     aln.start++;
-    aln.qstr = std::string(ndaln._qry_aln_str);
-    aln.tstr = std::string(ndaln._tgt_aln_str);
-
-    assert(aln.qstr.length() == aln.tstr.length());
-
     cnspos[i].setMinMax(aln.start, aln.end);
+    assert(aln.qstr.length() == aln.tstr.length());
+    assert(aln.end < utg.seq.size());
 
     dagcon::Alignment norm = normalizeGaps(aln);
 
@@ -437,10 +472,48 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
   }
 
   //  Merge the nodes and call consensus
-
   ag.mergeNodes();
 
   std::string cns = ag.consensus(1);
+
+#ifdef REALIGN
+  // update positions, this requires remapping but this time to the final consensus, turned off for now
+  uint32 minPos = cns.size();
+  uint32 maxPos = 0;
+
+#pragma omp parallel for schedule(dynamic)
+  for (uint32 i=0; i<numfrags; i++) {
+    abSequence  *seq     = abacus->getSequence(i);
+
+    uint32 bandTolerance = (int32)round((double)(seq->length() * errorRate)) * 2;
+    uint32 maxExtend     = (int32)round((double)seq->length() * 0.01) + 1;
+    int32  padding       = bandTolerance;
+    uint32 start         = max((int32)0, (int32)utgpos[i].min() - padding);
+    uint32 end           = min((int32)cns.size(), (int32)utgpos[i].max() + padding);
+
+    EdlibAlignResult align = edlibAlign(seq->getBases(), seq->length()-1, cns.c_str()+start, end-start+1,  edlibNewAlignConfig(bandTolerance, EDLIB_MODE_HW, EDLIB_TASK_LOC));
+    if (align.numLocations > 0) {
+       cnspos[i].setMinMax(align.startLocations[0]+start, align.endLocations[0]+start+1);
+       // when we are very close to end extend
+       if (cnspos[i].max() < cns.size() && cns.size() - cnspos[i].max() <= maxExtend && (align.editDistance + cns.size() - cnspos[i].max()) < bandTolerance) {
+          cnspos[i].setMinMax(cnspos[i].min(), cns.size());
+       }
+#pragma omp critical (trackMin)
+       if (cnspos[i].min() < minPos) minPos = cnspos[i].min();
+#pragma omp critical (trackMax)
+       if (cnspos[i].max() > maxPos) maxPos = cnspos[i].max();
+    } else {
+}
+    edlibFreeAlignResult(align);
+  }
+  memcpy(tig->getChild(0), cnspos, sizeof(tgPosition) * numfrags);
+
+  // trim consensus if needed
+  if (maxPos < cns.size()) 
+     cns = cns.substr(0, maxPos);
+  assert(minPos == 0);
+  assert(maxPos == cns.size());
+#endif
 
   //  Save consensus
 
@@ -452,7 +525,6 @@ unitigConsensus::generatePBDAG(tgTig                     *tig_,
     tig->_gappedBases[len] = cns[len];
     tig->_gappedQuals[len] = CNS_MIN_QV;
   }
-
   //  Terminate the string.
 
   tig->_gappedBases[len] = 0;
@@ -842,7 +914,7 @@ unitigConsensus::computePositionFromAlignment(void) {
 
   if (foundAlign == false) {
 
-    if (oaPartial == false)
+    if (oaPartial == NULL)
       oaPartial = new NDalign(pedLocal, errorRate, 17);  //  partial allowed!
 
     oaPartial->initialize(0, abacus->bases(), abacus->numberOfColumns(), 0, abacus->numberOfColumns(),
@@ -1115,7 +1187,7 @@ unitigConsensus::alignFragment(bool forceAlignment) {
 
   //  Create new aligner object.  'Global' in this case just means to not stop early, not a true global alignment.
 
-  if (oaFull == false)
+  if (oaFull == NULL)
     oaFull = new NDalign(pedGlobal, errorRate, 17);
 
   oaFull->initialize(0, aseq, cnsEnd  - cnsBgn,   0, cnsEnd  - cnsBgn,

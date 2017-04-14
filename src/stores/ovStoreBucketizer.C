@@ -62,7 +62,7 @@ writeToFile(gkStore       *gkp,
   if (sliceFile[df] == NULL) {
     char name[FILENAME_MAX];
 
-    snprintf(name, FILENAME_MAX, "%s/create%04d/slice%03d%s", ovlName, jobIndex, df, (useGzip) ? ".gz" : "");
+    snprintf(name, FILENAME_MAX, "%s/create%04d/slice%04d%s", ovlName, jobIndex, df, (useGzip) ? ".gz" : "");
     sliceFile[df] = new ovFile(gkp, name, ovFileFullWriteNoCounts);
     sliceSize[df] = 0;
   }
@@ -250,7 +250,7 @@ main(int argc, char **argv) {
   //AS_OVS_setBinaryOverlapFileBufferSize(2 * 1024 * 1024);
 
   while (inputFile->readOverlap(&foverlap)) {
-    filter->filterOverlap(foverlap, roverlap);  //  The filter copies f into r
+    filter->filterOverlap(foverlap, roverlap);  //  The filter copies f into r, and checks IDs
 
     //  If all are skipped, don't bother writing the overlap.
 

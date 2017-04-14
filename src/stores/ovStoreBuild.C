@@ -166,7 +166,7 @@ computeIIDperBucket(uint32          fileLimit,
   allocateArray(oPR, maxIID);
 
   for (uint32 i=0; i<fileList.size(); i++)
-    hist->loadData(fileList[i]);
+    hist->loadData(fileList[i], maxIID);
 
   uint64   numOverlaps = hist->getOverlapsPerRead(oPR, maxIID);
 
@@ -293,13 +293,13 @@ computeIIDperBucket(uint32          fileLimit,
       iidToBucket[ii]   = bucket;
 
       if (olaps >= olapsPerBucketMax) {
-        fprintf(stderr, "  bucket %3d has " F_U64 " olaps.\n", bucket, olaps);
+        fprintf(stderr, "  bucket %4d has " F_U64 " olaps.\n", bucket, olaps);
         olaps = 0;
         bucket++;
       }
     }
 
-    fprintf(stderr, "  bucket %3d has " F_U64 " olaps.\n", bucket, olaps);
+    fprintf(stderr, "  bucket %4d has " F_U64 " olaps.\n", bucket, olaps);
   }
 
   fprintf(stderr, "Will sort %.3f million overlaps per bucket, using %u buckets %.2f GB per bucket.\n",
@@ -329,7 +329,7 @@ writeToDumpFile(gkStore          *gkp,
 
   if (dumpFile[df] == NULL) {
     char name[FILENAME_MAX];
-    snprintf(name, FILENAME_MAX, "%s/tmp.sort.%03d", ovlName, df);
+    snprintf(name, FILENAME_MAX, "%s/tmp.sort.%04d", ovlName, df);
     fprintf(stderr, "-- Create bucket '%s'\n", name);
     dumpFile[df]   = new ovFile(gkp, name, ovFileFullWriteNoCounts);
     dumpLength[df] = 0;
@@ -442,7 +442,8 @@ main(int argc, char **argv) {
     fprintf(stderr, "  -config out.dat       don't build a store, just dump a binary partitioning file for ovStoreBucketizer\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Sizes and Limits:\n");
-    fprintf(stderr, "  ovOverlapSortSize     " F_S32 " bytes\n",     (int32)ovOverlapSortSize);
+    fprintf(stderr, "  ovOverlap             " F_S32 " words of " F_S32 " bits each.\n", (int32)ovOverlapNWORDS, (int32)ovOverlapWORDSZ);
+    fprintf(stderr, "  ovOverlapSortSize     " F_S32 " bits\n",      (int32)ovOverlapSortSize * 8);
     fprintf(stderr, "  SC_CHILD_MAX          " F_S32 " processes\n", (int32)sysconf(_SC_CHILD_MAX));
     fprintf(stderr, "  SC_OPEN_MAX           " F_S32 " files\n",     (int32)sysconf(_SC_OPEN_MAX));
     fprintf(stderr, "\n");
@@ -593,7 +594,7 @@ main(int argc, char **argv) {
     //  directly....BUT....we can't do that because the AS_OVS interface is rearranging the data to
     //  make sure the store is cross-platform compatible.
 
-    snprintf(name, FILENAME_MAX, "%s/tmp.sort.%03d", ovlName, i);
+    snprintf(name, FILENAME_MAX, "%s/tmp.sort.%04d", ovlName, i);
     fprintf(stderr, "-  Loading '%s'\n", name);
 
     bof = new ovFile(gkp, name, ovFileFull);

@@ -327,7 +327,7 @@ public:
   //  Return the statistics associated with this store
 
   ovStoreHistogram  *getHistogram(void) {
-    return(new ovStoreHistogram(_gkp, _storePath));
+    return(new ovStoreHistogram(_storePath));
   };
 
 private:
@@ -362,11 +362,10 @@ public:
   ovStoreFilter(gkStore *gkp_, double maxErate);
   ~ovStoreFilter();
 
-  void    filterOverlap(ovOverlap     &foverlap,
-                        ovOverlap     &roverlap);
+  void     filterOverlap(ovOverlap     &foverlap,
+                         ovOverlap     &roverlap);
 
-  //void    reportFate(void);
-  void    resetCounters(void);
+  void     resetCounters(void);
 
   uint64   savedUnitigging(void)    { return(saveUTG);      };
   uint64   savedTrimming(void)      { return(saveOBT);      };

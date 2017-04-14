@@ -40,18 +40,20 @@ package canu::Defaults;
 require Exporter;
 
 @ISA    = qw(Exporter);
-@EXPORT = qw(getCommandLineOptions addCommandLineOption addCommandLineError writeLog getNumberOfCPUs getPhysicalMemorySize getAllowedResources diskSpace printOptions printVersion printHelp setParametersFromFile setParametersFromCommandLine checkJava checkGnuplot checkParameters getGlobal setGlobal setGlobalIfUndef showErrorRates setErrorRate setDefaults);
+@EXPORT = qw(getCommandLineOptions addCommandLineOption addCommandLineError writeLog getNumberOfCPUs getPhysicalMemorySize getAllowedResources diskSpace printOptions printHelp addSequenceFile setParametersFromFile setParametersFromCommandLine checkJava checkGnuplot checkParameters getGlobal setGlobal setGlobalIfUndef setDefaults setVersion);
 
 use strict;
+use Cwd qw(getcwd abs_path);
 use Carp qw(cluck);
 use Sys::Hostname;
 use Text::Wrap;
+use File::Basename;   #  dirname
 
 my %global;    #  Parameter value
 my %synops;    #  Parameter description (for -defaults)
 my %synnam;    #  Parameter name (beacuse the key is lowercase)
 
-my $cLineOpts = "";
+my $cLineOpts = undef;
 my $specLog   = "";
 
 
@@ -95,7 +97,9 @@ sub setGlobal ($$) {
     my $set = 0;
 
     $var =~ tr/A-Z/a-z/;
-    $val = undef  if ($val eq "");  #  Set to undefined, the default for many of the options.
+
+    $val = undef  if ($val eq "undef");   #  Set to undefined, the default for many of the options.
+    $val = undef  if ($val eq "");
 
     #  Map 'true'/'false' et al. to 0/1.
 
@@ -114,7 +118,7 @@ sub setGlobal ($$) {
         }
     }
 
-    foreach my $opt ("overlapper") {
+    foreach my $opt ("overlapper", "realign") {
         $set += setGlobalSpecialization($val, ("cor${opt}", "obt${opt}", "utg${opt}"))  if ($var eq "${opt}");
     }
 
@@ -128,17 +132,43 @@ sub setGlobal ($$) {
         $set += setGlobalSpecialization($val, ("cor${opt}", "obt${opt}", "utg${opt}"))  if ($var eq "${opt}");
     }
 
-    return  if ($set > 0);
+    #  Handle the two error rate aliases.  Note 'errorRateUsed' must be lowercase.  setGlobal/getGlobal do that for us.
 
     if ($var eq "errorrate") {
-        setErrorRate($val, 1);
+        $var = "correctederrorrate";
+        $val = 3 * $val;
+
+        $global{"errorrateused"}  = "--\n";
+        $global{"errorrateused"} .= "-- WARNING: Obsolete 'errorRate' used, replace with 'correctedErrorRate', set to three times the value.\n";
+        $global{"errorrateused"} .= "-- WARNING: errorRate was the expected error rate in a single corrected read; correctedErrorRate is the\n";
+        $global{"errorrateused"} .= "-- WARNING: allowed difference in an alignment of two corrected reads.\n";
+    }
+
+    if ($var eq "rawerrorrate") {
+        setGlobalIfUndef("corOvlErrorRate", $val);
+        setGlobalIfUndef("corErrorRate",    $val);
         return;
     }
 
-    #  If we got a parameter we don't understand, we should be parsing command line options or
+    if ($var eq "correctederrorrate") {
+        setGlobalIfUndef("obtOvlErrorRate", $val);
+        setGlobalIfUndef("obtErrorRate",    $val);
+        setGlobalIfUndef("utgOvlErrorRate", $val);
+        setGlobalIfUndef("utgErrorRate",    $val);
+        setGlobalIfUndef("cnsErrorRate",    $val);
+        return;
+    }
+
+    return  if ($set > 0);
+
+    #if ($var eq "canuiteration") {
+    #    print STDERR "-- WARNING: set canuIteration to $val\n";
+    #}
+
+    #  If we get a parameter we don't understand, we should be parsing command line options or
     #  reading spec files, and we can let the usual error handling handle it.
 
-    addCommandLineError("ERROR:  Paramter '$VAR' is not known.\n")   if (!exists($global{$var}));
+    addCommandLineError("ERROR:  Parameter '$VAR' is not known.\n")   if (!exists($global{$var}));
 
     $global{$var} = $val;
 }
@@ -166,11 +196,12 @@ sub getCommandLineOptions () {
 
 
 sub addCommandLineOption ($) {
-    if ($cLineOpts =~ m/\s$/) {
-        $cLineOpts .= "$_[0]";
-    } else {
-        $cLineOpts .= " $_[0]";
-    }
+    my $opt = shift @_;
+
+    return   if ($opt =~ m/canuIteration=/);   #  Ignore canu resetting canuIteration
+
+    $cLineOpts .= " "   if (defined($cLineOpts) && ($cLineOpts !~ m/\s$/));
+    $cLineOpts .= $opt;
 }
 
 
@@ -181,14 +212,12 @@ sub addCommandLineError($) {
 
 
 
-sub writeLog ($) {
-    my $wrk = shift @_;
-
+sub writeLog () {
     my $time = time();
     my $host = hostname();
     my $pid  = $$;
 
-    open(F, "> $wrk/canu-logs/${time}_${host}_${pid}_canu");
+    open(F, "> canu-logs/${time}_${host}_${pid}_canu");
     print F $specLog;
     close(F);
 }
@@ -249,26 +278,11 @@ sub getPhysicalMemorySize () {
 
 
 
-sub dirname ($) {
-    my $d = shift @_;
-
-    return($d)  if (-d $d);
-
-    my @d = split '/', $d;
-    pop @d;
-
-    $d = join('/', @d);
-
-    return($d);
-}
-
-
-
 sub diskSpace ($) {
-    my  $wrk                          = dirname($_[0]);
+    my  $dir                          = dirname($_[0]);
     my ($total, $used, $free, $avail) = (0, 0, 0, 0);
 
-    open(DF, "df -P -k $wrk |");
+    open(DF, "df -P -k $dir |");
     while (<DF>) {
         chomp;
 
@@ -311,33 +325,18 @@ sub printOptions () {
 }
 
 
-sub printVersion ($) {
-    my $bin = shift @_;
-    my $version;
+sub printHelp (@) {
+    my $force = shift @_;
 
-    open(F, "$bin/gatekeeperCreate --version 2>&1 |");
-    while (<F>) {
-        $version = $_;  chomp $version;
-    }
-    close(F);
-
-    if (length($version) > 0) {
-        print "-- $version\n";
-    }
-}
-
-
-sub printHelp () {
-
-    return   if (!exists($global{'errors'}));
+    return   if (!defined($force) && !defined($global{"errors"}));
 
     print "\n";
-    print "usage: canu [-correct | -trim | -assemble | -trim-assemble] \\\n";
+    print "usage: canu [-version] \\\n";
+    print "            [-correct | -trim | -assemble | -trim-assemble] \\\n";
     print "            [-s <assembly-specifications-file>] \\\n";
     print "             -p <assembly-prefix> \\\n";
     print "             -d <assembly-directory> \\\n";
     print "             genomeSize=<number>[g|m|k] \\\n";
-    print "             errorRate=0.X \\\n";
     print "            [other-options] \\\n";
     print "            [-pacbio-raw | -pacbio-corrected | -nanopore-raw | -nanopore-corrected] *fastq\n";
     print "\n";
@@ -355,9 +354,6 @@ sub printHelp () {
     print "  It is used mostly to compute coverage in reads.  Fractional values are allowed: '4.7m'\n";
     print "  is the same as '4700k' and '4700000'\n";
     print "\n";
-    print "  The errorRate is not used correctly (we're working on it).  Don't set it\n";
-    print "  If you want to change the defaults, use the various utg*ErrorRate options.\n";
-    print "\n";
     print "  A full list of options can be printed with '-options'.  All options\n";
     print "  can be supplied in an optional sepc file.\n";
     print "\n";
@@ -371,8 +367,11 @@ sub printHelp () {
     print "\n";
     print "Complete documentation at http://canu.readthedocs.org/en/latest/\n";
     print "\n";
-    print "$global{'errors'}";
-    print "\n";
+
+    if (defined($global{'errors'})) {
+        print "$global{'errors'}";
+        print "\n";
+    }
 
     exit(1);
 }
@@ -382,15 +381,16 @@ sub printHelp () {
 sub makeAbsolute ($) {
     my $var = shift @_;
     my $val = getGlobal($var);
-    if (defined($val) && ($val !~ m!^/!)) {
-        $val = "$ENV{'PWD'}/$val";
-        setGlobal($var, $val);
+    my $abs = abs_path($val);
+
+    if (defined($val) && ($val != $abs)) {
+        setGlobal($var, $abs);
         $val =~ s/\\\"/\"/g;
         $val =~ s/\"/\\\"/g;
         $val =~ s/\\\$/\$/g;
         $val =~ s/\$/\\\$/g;
 
-        addCommandLineOption("\"$var=$val\"");
+        addCommandLineOption("'$var=$val'");
     }
 }
 
@@ -408,8 +408,29 @@ sub fixCase ($) {
 
 
 
-sub setParametersFromFile ($@) {
+sub addSequenceFile ($$@) {
+    my $dir   = shift @_;
+    my $file  = shift @_;
+    my $err   = shift @_;
+
+    return(undef)             if (!defined($file));   #  No file name?  Nothing to do.
+    $file = "$dir/$file"      if (defined($dir));     #  If $dir defined, assume file is in there.
+    return(abs_path($file))   if (-e $file);          #  If found, return the full path.
+
+    #  And if not found, report an error, unless told not to.  This is because on the command
+    #  line, the first word after -pacbio-raw must exist, but all the other words could
+    #  be files or options.
+
+    addCommandLineError("ERROR: Input read file '$file' not found.\n")  if (defined($err));
+
+    return(undef);
+}
+
+
+
+sub setParametersFromFile ($$@) {
     my $specFile  = shift @_;
+    my $readdir   = shift @_;
     my @fragFiles = @_;
 
     #  Client should be ensuring that the file exists before calling this function.
@@ -435,27 +456,53 @@ sub setParametersFromFile ($@) {
         next if (m/^#/);
         next if (length($_) eq 0);
 
-        #  File handling is also present in canu.pl around line 165.
-        if (m/^-(pacbio|nanopore)-(corrected|raw)\s+(.*)$/) {
-            my $arg  = "-$1-$2";
-            my $file = $3;
+        #  First, figure out the two words.
 
-            $file = "$ENV{'PWD'}/$file" if ($file !~ m!^/!);
+        my $one;
+        my $two;
+        my $opt;
 
-            push @fragFiles, "$arg\0$file";
-            addCommandLineOption("$arg \"$file\"");
+        if (m/^-(pacbio|nanopore)-(corrected|raw)\s+(.*)\s*$/) {   #  Comments not allowed, because then we can't decide
+            $one  = "-$1-$2";                                      #  if the # is a comment, or part of the file!
+            $two = $3;                                             #  e.g.,   this_is_file_#1   vs
+            $opt = 0;                                              #          this_is_the_only_file#no more data
         }
 
-        elsif (m/\s*(\w*)\s*=([^#]*)#*.*$/) {
-            my ($var, $val) = ($1, $2);
-            $var =~ s/^\s+//; $var =~ s/\s+$//;
-            $val =~ s/^\s+//; $val =~ s/\s+$//;
-            undef $val if ($val eq "undef");
-            setGlobal($var, $val);
-        }
+        elsif (m/^(\w*)\s*=\s*([^#]*)\s*#*.*?$/) {   #  Word two won't match a #, but will gobble up spaces at the end.
+            $one = $1;                               #  Then, we can match a #, and any amount of comment, minimally.
+            $two = $2;                               #  If word two is made non-greedy, it will shrink to nothing, as
+            $opt = 1;                                #  the last bit will gobble up everything, since we're allowed
+        }                                            #  to match zero #'s in between.
 
         else {
             addCommandLineError("ERROR:  File not found or unknown specFile option line '$_'.\n");
+        }
+
+        #  Now, clean up the second word to handle quotes.
+
+        $two =~ s/^\s+//;   #  There can be spaces from the greedy match.
+        $two =~ s/\s+$//;
+
+        $two = $1   if ($two =~ m/^'(.+)'$/);    #  Remove single quotes   |   But don't allowed mixed quotes; users
+        $two = $1   if ($two =~ m/^"(.+)"$/);    #  Remove double quotes   |   should certainly know better
+
+        #  And do something.
+
+        if ($opt == 1) {
+            $two =~ s/^\s+//;  #  Remove spaces again.  They'll just confuse our option processing.
+            $two =~ s/\s+$//;
+
+            setGlobal($one, $two);
+        }
+
+        else {
+            my $file = addSequenceFile($readdir, $two, 1);   #  Don't remove spaces.  File could be " file ", for some stupid reason.
+
+            if (defined($file)) {
+                push @fragFiles, "$one\0$file";
+            } else {
+                addCommandLineError("ERROR:  File not found in spec file option '$_'\n");
+            }
         }
     }
     close(F);
@@ -505,58 +552,11 @@ sub setExecDefaults ($$) {
     $global{"${tag}Threads"}       = undef;
     $synops{"${tag}Threads"}       = "Number of threads to use for $name jobs";
 
+    $global{"${tag}StageSpace"}    = undef;
+    $synops{"${tag}StageSpace"}    = "Amount of local disk space needed to stage data for $name jobs";
+
     $global{"${tag}Concurrency"}   = undef;
     $synops{"${tag}Concurrency"}   = "If grid not enabled, number of $name jobs to run at the same time; default is n_proc / n_threads";
-}
-
-
-
-sub showErrorRates ($) {
-    my $prefix = shift @_;
-
-    print STDERR "${prefix}\n";
-    print STDERR "${prefix}genomeSize          -- ", getGlobal("genomeSize"), "\n";
-    print STDERR "${prefix}errorRate           -- ", getGlobal("errorRate"), "\n";
-    print STDERR "${prefix}\n";
-    print STDERR "${prefix}corOvlErrorRate     -- ", getGlobal("corOvlErrorRate"), "\n";
-    print STDERR "${prefix}obtOvlErrorRate     -- ", getGlobal("obtOvlErrorRate"), "\n";
-    print STDERR "${prefix}utgOvlErrorRate     -- ", getGlobal("utgOvlErrorRate"), "\n";
-    print STDERR "${prefix}\n";
-    print STDERR "${prefix}obtErrorRate        -- ", getGlobal("obtErrorRate"), "\n";
-    print STDERR "${prefix}\n";
-    #print STDERR "${prefix}corErrorRate        -- ", getGlobal("corErrorRate"), "\n";
-    print STDERR "${prefix}cnsErrorRate        -- ", getGlobal("cnsErrorRate"), "\n";
-}
-
-
-#  Defaults are set for yeast:
-#    trimming   errorRate = 0.009  obtOvlErrorRate = 0.06  obtErrorRate = 0.035
-#    assembly   errorRate = 0.009  utgOvlErrorRate = 0.06  bogart 0.035
-#
-sub setErrorRate ($$) {
-    my $er      = shift @_;
-    my $force   = shift @_;
-
-    if (($force == 0) && (defined($global{"errorrate"}))) {
-        #print STDERR "-- Can't change error rate from ", getGlobal('errorRate'), " to $er - not allowed.\n";
-        return;
-    }
-
-    #print STDERR "-- Set errorRate to $er\n";
-
-    #  Can NOT call setGlobal() for this, because it calls setErrorRate()!.
-    $global{"errorrate"} = $er;
-    setGlobal("corOvlErrorRate",    $er * 3);  #  Not used, except for realigning
-    setGlobal("obtOvlErrorRate",    $er * 3);  #  Generally must be smaller than utgGraphErrorRate
-    setGlobal("utgOvlErrorRate",    $er * 3);
-
-    setGlobal("obtErrorRate",       $er * 3);
-
-    #  Removed, is usually set in CorrectReads, can be set from command line directly.
-    #setGlobal("corErrorRate",       $er * 10);  #  Erorr rate used for raw sequence alignment/consensus
-    setGlobal("cnsErrorRate",       $er * 3);
-
-    #showErrorRates("--  ");
 }
 
 
@@ -611,7 +611,7 @@ sub setOverlapDefaults ($$$) {
     $global{"${tag}MhapVersion"}              = "2.1.2";
     $synops{"${tag}MhapVersion"}              = "Version of the MHAP jar file to use";
 
-    $global{"${tag}MhapFilterThreshold"}      = "0.000005";
+    $global{"${tag}MhapFilterThreshold"}      = "0.000005";   #  Needs to be a string, else it is printed as 5e-06.
     $synops{"${tag}MhapFilterThreshold"}      = "Value between 0 and 1. kmers which comprise more than this percentage of the input are downweighted";
 
     $global{"${tag}MhapFilterUnique"}         = undef;
@@ -633,7 +633,7 @@ sub setOverlapDefaults ($$$) {
     $synops{"${tag}MhapOrderedMerSize"}       = "K-mer size for second-stage filter in mhap";
 
     $global{"${tag}MhapSensitivity"}          = undef;
-    $synops{"${tag}MhapSensitivity"}          = "Coarse sensitivity level: 'low', 'normal' or 'high'.  Usually set automatically based on coverage; 'high' <= 30x < 'normal' < 60x <= 'low'";
+    $synops{"${tag}MhapSensitivity"}          = "Coarse sensitivity level: 'low', 'normal' or 'high'.  Set automatically based on coverage; 'high' <= 30x < 'normal' < 60x <= 'low'";
 
     $global{"${tag}MhapBlockSize"}            = 6000;
     $synops{"${tag}MhapBlockSize"}            = "Number of reads per 1GB; memory * blockSize = the size of  block loaded into memory per job";
@@ -647,24 +647,31 @@ sub setOverlapDefaults ($$$) {
     $synops{"${tag}MalnMerSize"}              = "K-mer size for seeds in minialign";
 
     # shared parameters for alignment-free overlappers
-    $global{"${tag}ReAlign"}                  = undef;
-    $synops{"${tag}ReAlign"}              = "Compute actual alignments from overlaps; 'raw' from output, 'final' from overlap store; uses either obtErrorRate or ovlErrorRate, depending on which overlaps are computed";
+    $global{"${tag}ReAlign"}                  = 0;
+    $synops{"${tag}ReAlign"}                  = "Refine mhap/minimap overlaps by computing the actual alignment: 'true' or 'false'.  Uses ${tag}OvlErrorRate";
 }
 
 
 
 sub setDefaults () {
 
+    #####  Internal stuff
+
+    $global{"errors"}                      = undef;   #  Command line errors
+    $global{"errorRateUsed"}               = undef;   #  A warning if obsolete 'errorRate' parameter is used.  This lets us print the error in a useful place, instead of at the very start of the output.
+
+    $global{"version"}                     = undef;   #  Reset at the end of this function, once we know where binaries are.
+
     #####  General Configuration Options (aka miscellany)
 
-    $global{"canuIteration"}               = 1;  #  See documentation in Execution.pm
+    $global{"canuIteration"}               = 0;  #  See documentation in Execution.pm
     $global{"canuIterationMax"}            = 2;
 
     $global{"showNext"}                    = undef;
     $synops{"showNext"}                    = "Don't run any commands, just report what would run";
 
     $global{"pathMap"}                     = undef;
-    $synops{"pathMap"}                     = "File with a hostname to binary directory map";
+    $synops{"pathMap"}                     = "File with a hostname to binary directory map; binary directories must be absolute paths";
 
     $global{"shell"}                       = "/bin/sh";
     $synops{"shell"}                       = "Command interpreter to use; sh-compatible (e.g., bash), NOT C-shell (csh or tcsh); default '/bin/sh'";
@@ -680,6 +687,9 @@ sub setDefaults () {
 
     $global{"gnuplotTested"}               = 0;
     $synops{"gnuplotTested"}               = "If set, skip the initial testing of gnuplot";
+
+    $global{"stageDirectory"}              = undef;
+    $synops{"stageDirectory"}              = "If set, copy heavily used data to this node-local location";
 
     #####  Cleanup and Termination options
 
@@ -703,9 +713,6 @@ sub setDefaults () {
 
     #####  Error Rates
 
-    $global{"errorRate"}                   = undef;
-    $synops{"errorRate"}                   = "The expected error rate in the corrected reads, typically set based on sequencing type. Set to 0 to try to estimate dynamically. (EXPERIMENTAL)";
-
     $global{"corOvlErrorRate"}             = undef;
     $synops{"corOvlErrorRate"}             = "Overlaps above this error rate are not computed";
 
@@ -715,17 +722,17 @@ sub setDefaults () {
     $global{"utgOvlErrorRate"}             = undef;
     $synops{"utgOvlErrorRate"}             = "Overlaps at or below this error rate are used to trim reads";
 
-    #$global{"utgErrorRate"}                = undef;
-    #$synops{"utgErrorRate"}                = "Overlaps at or below this error rate are used to construct unitigs (BOG and UTG)";
+    $global{"utgErrorRate"}                = undef;
+    $synops{"utgErrorRate"}                = "Overlaps at or below this error rate are used to construct contigs";
 
     $global{"utgGraphDeviation"}           = 6;
-    $synops{"utgGraphDeviation"}           = "Overlaps this much above median will not be used for initial graph construction (BOGART)";
+    $synops{"utgGraphDeviation"}           = "Overlaps this much above median will not be used for initial graph construction";
 
     $global{"utgRepeatDeviation"}          = 3;
-    $synops{"utgRepeatDeviation"}          = "Overlaps this much above mean unitig error rate will not be used for repeat splitting (BOGART)";
+    $synops{"utgRepeatDeviation"}          = "Overlaps this much above mean unitig error rate will not be used for repeat splitting";
 
     $global{"utgRepeatConfusedBP"}         = 2100;
-    $synops{"utgRepeatConfusedBP"}           = "Repeats where the next best edge is at least this many bp shorter will not be split (BOGART)";
+    $synops{"utgRepeatConfusedBP"}           = "Repeats where the next best edge is at least this many bp shorter will not be split";
 
     $global{"corErrorRate"}                = undef;
     $synops{"corErrorRate"}                = "Only use raw alignments below this error rate to construct corrected reads";
@@ -756,9 +763,6 @@ sub setDefaults () {
     $global{"stopOnReadQuality"}           = 1;
     $synops{"stopOnReadQuality"}           = "Stop if a significant portion of the input data is too short or has quality value or base composition errors";
 
-    $global{"stopBefore"}                  = undef;
-    $synops{"stopBefore"}                  = "Tell canu when to halt execution";
-
     $global{"stopAfter"}                   = undef;
     $synops{"stopAfter"}                   = "Tell canu when to halt execution";
 
@@ -768,9 +772,6 @@ sub setDefaults () {
 
     $global{"gridEngine"}                           = undef;
     $global{"gridEngineSubmitCommand"}              = undef;
-    $global{"gridEngineHoldOption"}                 = undef;
-    $global{"gridEngineHoldOptionNoArray"}          = undef;
-    $global{"gridEngineSyncOption"}                 = undef;
     $global{"gridEngineNameOption"}                 = undef;
     $global{"gridEngineArrayOption"}                = undef;
     $global{"gridEngineArrayName"}                  = undef;
@@ -782,6 +783,7 @@ sub setDefaults () {
     $global{"gridEngineMemoryUnits"}                = undef;
     $global{"gridEngineNameToJobIDCommand"}         = undef;
     $global{"gridEngineNameToJobIDCommandNoArray"}  = undef;
+    $global{"gridEngineStageOption"}                = undef;
     $global{"gridEngineTaskID"}                     = undef;
     $global{"gridEngineArraySubmitID"}              = undef;
     $global{"gridEngineJobID"}                      = undef;
@@ -791,7 +793,7 @@ sub setDefaults () {
     $global{"useGrid"}                     = 1;
     $synops{"useGrid"}                     = "If 'true', enable grid-based execution; if 'false', run all jobs on the local machine; if 'remote', create jobs for grid execution but do not submit; default 'true'";
 
-    foreach my $c (qw(BAT CNS COR MERYL CORMHAP CORMMAP COROVL OBTMHAP OBTOVL OEA OVB OVS RED UTGMHAP UTGMMAP UTGOVL)) {
+    foreach my $c (qw(BAT CNS COR MERYL CORMHAP CORMMAP COROVL OBTMHAP OBTMMAP OBTOVL OEA OVB OVS RED UTGMHAP UTGMMAP UTGOVL)) {
         $global{"useGrid$c"} = 1;
         $synops{"useGrid$c"} = "If 'true', run module $c under grid control; if 'false' run locally.";
     }
@@ -837,6 +839,17 @@ sub setDefaults () {
 
     setExecDefaults("bat",    "unitig construction");
     setExecDefaults("cns",    "unitig consensus");
+
+    #####  Object Storage
+
+    $global{"objectStore"}                 = undef;
+    $synops{"objectStore"}                 = "Type of object storage used; not ready for production yet";
+
+    $global{"objectStoreClient"}           = undef;
+    $synops{"objectStoreClient"}           = "Path to the command line client used to access the object storage";
+
+    $global{"objectStoreNameSpace"}        = undef;
+    $synops{"objectStoreNameSpace"}        = "Object store parameters; specific to the type of objectStore used";
 
     #####  Overlapper
 
@@ -962,9 +975,6 @@ sub setDefaults () {
     $global{"corConsensus"}                = "falconpipe";
     $synops{"corConsensus"}                = "Which consensus algorithm to use; only 'falcon' and 'falconpipe' are supported; default 'falconpipe'";
 
-    $global{"falconSense"}                 = undef;
-    $synops{"falconSense"}                 = "Path to fc_consensus.py or falcon_sense.bin";
-
     $global{"corLegacyFilter"}             = undef;
     $synops{"corLegacyFilter"}             = "Expert option: global filter, length * identity (default) or length with  broken by identity (if on)";
 
@@ -994,6 +1004,21 @@ sub setDefaults () {
     }
 }
 
+
+#  Get the version information.  Needs to be last so that pathMap can be defined.
+
+sub setVersion ($) {
+    my $bin    = shift @_;
+    my $version;
+
+    open(F, "$bin/gatekeeperCreate --version 2>&1 |");
+    while (<F>) {
+        $version = $_;  chomp $version;
+    }
+    close(F);
+
+    $global{'version'} = $version;
+}
 
 
 sub checkJava () {
@@ -1164,8 +1189,6 @@ sub checkParameters () {
     #  Fiddle with filenames to make them absolute paths.
     #
 
-    makeAbsolute("pathMap");
-
     makeAbsolute("corOvlFrequentMers");
     makeAbsolute("obtOvlFrequentMers");
     makeAbsolute("utgOvlFrequentMers");
@@ -1184,8 +1207,13 @@ sub checkParameters () {
     fixCase("corFilter");
 
     fixCase("unitigger");
-    fixCase("stopBefore");
     fixCase("stopAfter");
+
+    #
+    #  Well, crud.  'gridEngine' wants to be uppercase, not lowercase like fixCase() would do.
+    #
+
+    $global{"gridengine"} =~ tr/a-z/A-Z/;  #  NOTE: lowercase 'gridengine'
 
     #
     #  Check for inconsistent parameters
@@ -1197,6 +1225,10 @@ sub checkParameters () {
     {
         my $gs = getGlobal("genomeSize");
 
+        if (!defined($gs)) {
+            addCommandLineError("ERROR:  Required parameter 'genomeSize' not set.\n");
+        }
+
         if (($gs =~ m/^(\d+)$/) ||
             ($gs =~ m/^(\d+\.\d+)$/)) {
             if ($gs < 1000) {
@@ -1205,7 +1237,7 @@ sub checkParameters () {
         }
     }
 
-    foreach my $var ("corOvlErrorRate", "obtOvlErrorRate", "utgOvlErrorRate", "corErrorRate", "cnsErrorRate", "obtErrorRate") {
+    foreach my $var ("corOvlErrorRate", "obtOvlErrorRate", "utgOvlErrorRate", "corErrorRate", "obtErrorRate", "utgErrorRate", "cnsErrorRate") {
         if (!defined(getGlobal($var))) {
             addCommandLineError("ERROR:  Invalid '$var' specified; must be set\n");
         }
@@ -1331,34 +1363,6 @@ sub checkParameters () {
         addCommandLineError("ERROR:  Invalid 'useGrid' specified (" . getGlobal("useGrid") . "); must be 'true', 'false' or 'remote'\n");
     }
 
-    if (defined(getGlobal("stopBefore"))) {
-        my $ok = 0;
-        my $st = getGlobal("stopBefore");
-        $st =~ tr/A-Z/a-z/;
-
-        my $failureString = "ERROR:  Invalid stopBefore specified (" . getGlobal("stopBefore") . "); must be one of:\n";
-
-        my @stopBefore = ("gatekeeper",
-                          "meryl",
-                          "trimReads",
-                          "splitReads",
-                          "red", "oea",
-                          "unitig",
-                          "consensusConfigure",
-                          "cns");
-
-        foreach my $sb (@stopBefore) {
-            $failureString .= "ERROR:      '$sb'\n";
-            $sb =~ tr/A-Z/a-z/;
-            if ($st eq $sb) {
-                $ok++;
-                setGlobal('stopBefore', $st);
-            }
-        }
-
-        addCommandLineError($failureString)   if ($ok == 0);
-    }
-
     if (defined(getGlobal("stopAfter"))) {
         my $ok = 0;
         my $st = getGlobal("stopAfter");
@@ -1368,14 +1372,17 @@ sub checkParameters () {
 
         my @stopAfter = ("gatekeeper",
                          "meryl",
-                         "mhapConfigure",
+                         "overlapConfigure",
+                         "overlap",
                          "overlapStoreConfigure",
                          "overlapStore",
+                         "readCorrection",
+                         "readTrimming",
                          "unitig",
                          "consensusConfigure",
                          "consensusCheck",
                          "consensusLoad",
-                         "consensusFilter");
+                         "consensusAnalyze");
 
         foreach my $sa (@stopAfter) {
             $failureString .= "ERROR:      '$sa'\n";
@@ -1389,9 +1396,6 @@ sub checkParameters () {
         addCommandLineError($failureString)   if ($ok == 0);
     }
 
-    addCommandLineError("ERROR:  Required parameter 'errorRate' is not set\n")    if (! defined(getGlobal("errorRate")));
-    addCommandLineError("ERROR:  Required parameter 'genomeSize' is not set\n")   if (! defined(getGlobal("genomeSize")));
-
     #
     #  Minimap, no valid identities, set legacy
     #
@@ -1399,30 +1403,6 @@ sub checkParameters () {
     if (getGlobal("corOverlapper") eq "minimap") {
         setGlobalIfUndef("corLegacyFilter", 1);
     }
-
-    #
-    #  Falcon?  Need to find it.
-    #
-
-    if ((getGlobal("corConsensus") eq "falcon") ||
-        (getGlobal("corConsensus") eq "falconpipe")) {
-        my $falcon = getGlobal("falconSense");
-
-        addCommandLineError("ERROR:  Didn't find falcon program with option falconSense='$falcon'")   if ((defined($falcon)) && (! -e $falcon));
-    }
-
-    #
-    #  Set default error rates based on the per-read error rate.
-    #
-
-    setGlobalIfUndef("corOvlErrorRate",      3.0 * getGlobal("errorRate"));
-    setGlobalIfUndef("obtOvlErrorRate",      3.0 * getGlobal("errorRate"));
-    setGlobalIfUndef("utgOvlErrorRate",      3.0 * getGlobal("errorRate"));
-
-    setGlobalIfUndef("ovlErrorRate",         2.5 * getGlobal("errorRate"));
-
-    setGlobalIfUndef("corsErrorRate",        10.0 * getGlobal("errorRate"));
-    setGlobalIfUndef("cnsErrorRate",         2.5 * getGlobal("errorRate"));
 }
 
 
