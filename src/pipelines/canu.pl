@@ -65,6 +65,7 @@ use canu::Meryl;
 use canu::OverlapInCore;
 use canu::OverlapMhap;
 use canu::OverlapMMap;
+use canu::OverlapMaln;
 use canu::OverlapStore;
 
 use canu::CorrectReads;
@@ -419,6 +420,8 @@ sub overlap ($$$) {
 
     my $ovlType = ($tag eq "utg") ? "normal" : "partial";
 
+    print STDOUT "wrk: $wrk, asm: $asm, tag: $tag";
+
     if (getGlobal("${tag}overlapper") eq "mhap") {
         mhapConfigure($wrk, $asm, $tag, $ovlType);
 
@@ -428,12 +431,19 @@ sub overlap ($$$) {
 
         mhapCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-   } elsif (getGlobal("${tag}overlapper") eq "minimap") {
+    } elsif (getGlobal("${tag}overlapper") eq "minimap") {
         mmapConfigure($wrk, $asm, $tag, $ovlType);
 
         mmapPrecomputeCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
         mmapCheck($wrk, $asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
+
+    } elsif (getGlobal("${tag}overlapper") eq "minialign") {
+        malnConfigure($wrk, $asm, $tag, $ovlType);
+
+        malnPrecomputeCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+
+        malnCheck($wrk, $asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
 
     } else {
         overlapConfigure($wrk, $asm, $tag, $ovlType);
@@ -458,6 +468,7 @@ print STDERR "-- Final error rates before starting pipeline:\n";
 
 showErrorRates("--   ");
 
+print STDOUT "wrk: $wrk, asm: $asm";
 if (setOptions($mode, "correct") eq "correct") {
     print STDERR "--\n";
     print STDERR "--\n";

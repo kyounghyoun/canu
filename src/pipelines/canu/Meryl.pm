@@ -217,6 +217,11 @@ sub merylParameters ($$$) {
         $ffile = "$wrk/0-mercounts/$asm.ms$merSize.skip";
         make_path("$wrk/0-mercounts")  if (! -d "$wrk/0-mercounts");
         touch($ffile);
+    } elsif (getGlobal("${tag}Overlapper") eq "minialign") {
+        # do nothing
+        $ffile = "$wrk/0-mercounts/$asm.ms$merSize.skip";
+        make_path("$wrk/0-mercounts")  if (! -d "$wrk/0-mercounts");
+        touch($ffile);
     } else {
         caFailure("unknown ${tag}Overlapper '" . getGlobal("${tag}Overlapper") . "'", undef);
     }

@@ -55,6 +55,8 @@ sub malnConfigure ($$$) {
     my $base;                #  e.g., $base/1-overlapper/mhap.sh
     my $path;                #  e.g., $path/mhap.sh
 
+    print STDERR "asm: $asm, tag: $tag, typ: $typ, bin: $bin, base: $base, path: $path";
+
     $base = "correction"  if ($tag eq "cor");
     $base = "trimming"    if ($tag eq "obt");
     $base = "unitigging"  if ($tag eq "utg");
@@ -80,7 +82,7 @@ sub malnConfigure ($$$) {
     #  Constants.
 
     my $merSize       = getGlobal("${tag}MalnMerSize");
-    my $windowSize       = getGlobal("${tag}MalnWindowSize");
+    my $windowSize    = getGlobal("${tag}MalnWindowSize");
 
     my $numReads      = getNumberOfReadsInStore($base, $asm);
     my $memorySize    = getGlobal("${tag}MalnMemory");
