@@ -55,8 +55,6 @@ sub malnConfigure ($$$) {
     my $base;                #  e.g., $base/1-overlapper/mhap.sh
     my $path;                #  e.g., $path/mhap.sh
 
-    print STDERR "asm: $asm, tag: $tag, typ: $typ, bin: $bin, base: $base, path: $path";
-
     $base = "correction"  if ($tag eq "cor");
     $base = "trimming"    if ($tag eq "obt");
     $base = "unitigging"  if ($tag eq "utg");
@@ -112,7 +110,7 @@ sub malnConfigure ($$$) {
 
         #print STDERR "BLOCK ", scalar(@blocks), " reads from $bgn through $end\n";
 
-        push @blocks, "-r$bgn-$end";
+        push @blocks, "-r $bgn-$end";
 
         push @blockBgn, $bgn;
         push @blockLen, $end - $bgn + 1;
@@ -221,7 +219,7 @@ sub malnConfigure ($$$) {
     print F "  mkdir -p ./blocks\n";
     print F "fi\n";
     print F "\n";
-    print F fileExistsShellCode("./blocks/\$job.fasta");
+    print F "if [ -e ./blocks/\$job.fasta -e ./blocks/\$job.mai ] ; then\n";
     print F "  echo Job previously completed successfully.\n";
     print F "  exit\n";
     print F "fi\n";
@@ -236,35 +234,32 @@ sub malnConfigure ($$$) {
     print F "&& \\\n";
     print F "mv -f ./blocks/\$job.input.fasta ./blocks/\$job.fasta\n";
     print F "\n";
-
-    #  The following lines are ported from OverlapMhap.pm
-    print F "if [ ! -e \"$path/blocks/\$job.fasta\" ] ; then\n";
+    print F "if [ ! -e \"./blocks/\$job.fasta\" ] ; then\n";
     print F "  echo Failed to extract fasta.\n";
     print F "  exit 1\n";
     print F "fi\n";
     print F "\n";
+
+    #  The following lines are ported from OverlapMhap.pm
+    print F "\n";
     print F "echo Starting minialign precompute.\n";
     print F "\n";
     print F "#  So minialign writes its output in the correct spot.\n";
-    print F "cd $path/blocks\n";
     print F "\n";
     print F "\$bin/minialign \\\n";
     print F "  -NX \\\n";
     print F "  -t ", getGlobal("${tag}malnThreads"), " \\\n";
     print F "  -k $merSize \\\n";
     print F "  -w $windowSize \\\n";
-    print F "  -d $path/blocks/\$job.mai.WORKING \\\n";
-    print F "  $path/blocks/\$job.fasta \\\n";
+    print F "  -d ./blocks/\$job.mai.WORKING \\\n";
+    print F "  ./blocks/\$job.fasta \\\n";
     print F "&& \\\n";
     print F "mv -f ./blocks/\$job.mai.WORKING ./blocks/\$job.mai\n";
     print F "\n";
-    print F "if [ ! -e \"$path/blocks/\$job.mai\" ] ; then\n";
-    print F "  echo minialign failed.\n";
+    print F "if [ ! -e \"./blocks/\$job.mai\" ] ; then\n";
+    print F "  echo minialign precompute failed.\n";
     print F "  exit 1\n";
     print F "fi\n";
-    print F "\n";
-    print F "#  Clean up, remove the fasta input\n";
-    print F "rm -f $path/blocks/\$job.fasta\n";
     print F "\n";
     print F "exit 0\n";
 
@@ -315,7 +310,7 @@ sub malnConfigure ($$$) {
     print F "fi\n";
     print F "\n";
 
-    print F fetchFileShellCode("$path", "blocks/\$blk.fasta", "");
+    print F fetchFileShellCode("$path", "blocks/\$blk.mai", "");
 
     print F "for ii in `ls ./queries/\$qry` ; do\n";
     print F "  echo Fetch blocks/\$ii\n";
@@ -328,7 +323,7 @@ sub malnConfigure ($$$) {
 
     print F "for file in `ls queries/\$qry/*.fasta`; do\n";
     print F "  \$bin/minialign \\\n";
-    print F "    -NXxava \\\n";
+    print F "    -NXxava -Opaf \\\n";
     print F "    -t ", getGlobal("${tag}malnThreads"), " \\\n";
     print F "    -l ./blocks/\$blk.mai \\\n";
     print F "    \$file \\\n";
@@ -449,10 +444,10 @@ sub malnPrecomputeCheck ($$$) {
     open(F, "< $path/precompute.sh") or caFailure("can't open '$path/precompute.sh' for reading: $!", undef);
     while (<F>) {
         if (m/^\s+job=\"(\d+)\"$/) {
-            if (fileExists("$path/blocks/$1.fasta")) {
-                push @successJobs, "1-overlapper/blocks/$1.fasta\n";
+            if (fileExists("$path/blocks/$1.mai") && fileExists("$path/blocks/$1.fasta")) {
+                push @successJobs, "1-overlapper/blocks/$1.mai\n";
             } else {
-                $failureMessage .= "--   job 1-overlapper/blocks/$1.fasta FAILED.\n";
+                $failureMessage .= "--   job 1-overlapper/blocks/$1.mai FAILED.\n";
                 push @failedJobs, $currentJobID;
             }
 

@@ -635,16 +635,21 @@ sub setOverlapDefaults ($$$) {
     $global{"${tag}MhapSensitivity"}          = undef;
     $synops{"${tag}MhapSensitivity"}          = "Coarse sensitivity level: 'low', 'normal' or 'high'.  Set automatically based on coverage; 'high' <= 30x < 'normal' < 60x <= 'low'";
 
-    $global{"${tag}MhapBlockSize"}            = 6000;
-    $synops{"${tag}MhapBlockSize"}            = "Number of reads per 1GB; memory * blockSize = the size of  block loaded into memory per job";
-
     # minimap parameters.
+    $global{"${tag}MMapBlockSize"}            = 6000;
+    $synops{"${tag}MMapBlockSize"}            = "Number of reads per 1GB; memory * blockSize = the size of  block loaded into memory per job";
+
     $global{"${tag}MMapMerSize"}              = ($tag eq "cor") ? 15 : 21;
     $synops{"${tag}MMapMerSize"}              = "K-mer size for seeds in minmap";
 
     # minimap parameters.
-    $global{"${tag}MalnMerSize"}              = ($tag eq "cor") ? 14 : 20;
+    $global{"${tag}MalnBlockSize"}            = 6000;
+    $synops{"${tag}MalnBlockSize"}            = "Number of reads per 1GB; memory * blockSize = the size of  block loaded into memory per job";
+
+    $global{"${tag}MalnMerSize"}              = ($tag eq "cor") ? 14 : 16;
     $synops{"${tag}MalnMerSize"}              = "K-mer size for seeds in minialign";
+    $global{"${tag}MalnWindowSize"}           = ($tag eq "cor") ? 5 : 10;
+    $synops{"${tag}MalnWindowSize"}           = "Window size for minimizers in minialign";
 
     # shared parameters for alignment-free overlappers
     $global{"${tag}ReAlign"}                  = 0;

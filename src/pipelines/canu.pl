@@ -488,8 +488,6 @@ sub overlap ($$) {
 
     my $ovlType = ($tag eq "utg") ? "normal" : "partial";
 
-    print STDOUT "wrk: $wrk, asm: $asm, tag: $tag";
-
     if (getGlobal("${tag}overlapper") eq "mhap") {
         mhapConfigure($asm, $tag, $ovlType);
 
@@ -507,11 +505,11 @@ sub overlap ($$) {
         mmapCheck($asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
 
     } elsif (getGlobal("${tag}overlapper") eq "minialign") {
-        malnConfigure($wrk, $asm, $tag, $ovlType);
+        malnConfigure($asm, $tag, $ovlType);
 
-        malnPrecomputeCheck($wrk, $asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
+        malnPrecomputeCheck($asm, $tag, $ovlType)  foreach (1..getGlobal("canuIterationMax") + 1);
 
-        malnCheck($wrk, $asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
+        malnCheck($asm, $tag, $ovlType)   foreach (1..getGlobal("canuIterationMax") + 1);
 
     } else {
         overlapConfigure($asm, $tag, $ovlType);
@@ -532,7 +530,6 @@ sub overlap ($$) {
 #  return.
 #
 
-print STDOUT "wrk: $wrk, asm: $asm";
 if (setOptions($mode, "correct") eq "correct") {
     if (sequenceFileExists("$asm.correctedReads") eq undef) {
         print STDERR "--\n";
