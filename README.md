@@ -1,37 +1,36 @@
-# Canu
 
-Canu is a fork of the [Celera Assembler](http://wgs-assembler.sourceforge.net/wiki/index.php?title=Main_Page), designed for high-noise single-molecule sequencing (such as the [PacBio](http://www.pacb.com) [RS II](http://www.pacb.com/products-and-services/pacbio-systems/rsii/) or [Oxford Nanopore](https://www.nanoporetech.com/) [MinION](https://www.nanoporetech.com/products-services/minion-mki)).
+# Canu / minialign
 
-Canu is a hierarchical assembly pipeline which runs in four steps:
+This is a fork of [Canu](https://github.com/marbl/canu) assembler. See the original repository for information of the Canu pipeline. The original README.md is also reserved in README.canu.md.
 
-* Detect overlaps in high-noise sequences using [MHAP](https://github.com/marbl/MHAP)
-* Generate corrected sequence consensus
-* Trim corrected sequences
-* Assemble trimmed corrected sequences
+## Overview
 
-## Install:
+[Minialign](https://github.com/ocxtal/minialign) long-read alignment tool is experimentally incorporated in the Canu assembler pipeline as an all-versus-all overlapper. The precise alignment calculation stage in minialign is expected to help the whole pipeline generate better consensus sequences as reported for Canu / BLASR combination.
 
-The easiest way to get started is to download a [release](http://github.com/marbl/canu/releases). 
+## Installation
 
-Alternatively, you can also build the latest unreleased from github:
+```bash
+# install minialign
+$ git clone https://github.com/ocxtal/minialign
+$ cd minialign && make
+$ make install PREFIX=$PREFIX
+# install canu
+$ git clone https://github.com/ocxtal/canu
+$ cd canu/src && make
+$ cp ../Linux-amd64/bin/* $PREFIX/bin		# canu binaries and minialign must be installed in the same bin directory
+```
 
-    git clone https://github.com/marbl/canu.git
-    cd canu/src
-    make -j <number of threads>
+## Run
 
-## Learn:
+One of `corOverlapper=minialign`, `obtOverlapper=minialign`, or `utgOverlapper=minialign` is specified to invoke the minialign pipeline. By the default, `(w, k) = (5, 14)` is used in the correction and `(w, k) = (10, 16)` in the trimming and unitigging stages. To change these parameters, pass `{tag}WindowSize` and `{tag}MerSize` as options.
 
-The [quick start](http://canu.readthedocs.io/en/stable/quick-start.html) will get you assembling quickly, while the [tutorial](http://canu.readthedocs.io/en/stable/tutorial.html) explains things in more detail.
+```bash
+# example
+$ canu -correct -p asm -d asm genomeSize=4.7m corOverlapper=minialign -pacbio-raw reads.fa
+$ canu -trim-assemble -p asm -d asm genomeSize=4.7m obtOverlapper=minialign utgOverlapper=minialign -pacbio-corrected asm/correctedReads.fasta
+```
 
-## Run:
+## Results
 
-Brief command line help:
+Stats and a dotplot of a D.melanogaster sample are shown below.
 
-    ../<achitechture>/bin/canu
-
-Full list of parameters:
-
-    ../<architecture>/bin/canu -options
-
-## Citation:
- - Koren S, Walenz BP, Berlin K, Miller JR, Phillippy AM. [Canu: scalable and accurate long-read assembly via adaptive k-mer weighting and repeat separation](http://dx.doi.org/10.1101/071282). bioRxiv. (2016).
