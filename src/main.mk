@@ -108,6 +108,8 @@ SOURCES      := AS_global.C \
                 utgcns/libpbutgcns/AlnGraphBoost.C  \
                 utgcns/libNDFalcon/dw.C \
                 \
+                gfa/gfa.C \
+                \
                 meryl/libkmer/existDB-create-from-fasta.C \
                 meryl/libkmer/existDB-create-from-meryl.C \
                 meryl/libkmer/existDB-create-from-sequence.C \
@@ -220,7 +222,7 @@ SUBMAKEFILES := stores/gatekeeperCreate.mk \
                 \
                 utgcns/utgcns.mk \
                 \
-                utgcns/alignGFA.mk \
+                gfa/alignGFA.mk \
                 \
                 fastq-utilities/fastqAnalyze.mk \
                 fastq-utilities/fastqSample.mk \
