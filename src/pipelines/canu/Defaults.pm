@@ -646,7 +646,7 @@ sub setOverlapDefaults ($$$) {
     $global{"${tag}MalnBlockSize"}            = 6000;
     $synops{"${tag}MalnBlockSize"}            = "Number of reads per 1GB; memory * blockSize = the size of  block loaded into memory per job";
 
-    $global{"${tag}MalnMerSize"}              = ($tag eq "cor") ? 14 : 16;
+    $global{"${tag}MalnMerSize"}              = ($tag eq "cor") ? 14 : 15;
     $synops{"${tag}MalnMerSize"}              = "K-mer size for seeds in minialign";
     $global{"${tag}MalnWindowSize"}           = ($tag eq "cor") ? 5 : 10;
     $synops{"${tag}MalnWindowSize"}           = "Window size for minimizers in minialign";
