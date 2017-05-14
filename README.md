@@ -1,7 +1,7 @@
 
 # Canu / minialign
 
-Note: This is a fork of [Canu](https://github.com/marbl/canu) assembler. See the original repository for information of the Canu pipeline. The original README.md is also reserved in README.canu.md.
+Note: This is a fork of [Canu](https://github.com/marbl/canu) assembler. See the original repository for information of the Canu pipeline. The original README.md is also preserved in README.canu.md.
 
 ## Overview
 
