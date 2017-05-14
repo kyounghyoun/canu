@@ -287,7 +287,7 @@ sub mmapConfigure ($$$) {
     print F "  exit\n";
     print F "fi\n";
     print F "\n";
- 
+
     print F fetchFileShellCode("$path", "queries.tar", "");
     print F "\n";
     print F "if [ -e ./queries.tar -a ! -d ./queries ] ; then\n";
@@ -409,6 +409,9 @@ sub mmapConfigure ($$$) {
 
         print STDERR "-- Configured $numJobs mmap overlap jobs.\n";
     }
+
+    makeExecutable("$path/precompute.sh");
+    makeExecutable("$path/mhap.sh");
 
     stashFile("$path/precompute.sh");
     stashFile("$path/mhap.sh");

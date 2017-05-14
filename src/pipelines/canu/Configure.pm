@@ -401,7 +401,7 @@ sub getAllowedResources ($$$$@) {
     my $job = substr("    $concurrent",  -3) . " job" . (($concurrent == 1) ? " " : "s");
     my $thr = substr("    $taskThreads", -3) . " CPU" . (($taskThreads == 1) ? " " : "s");
     my $mem = substr("    $taskMemory",  -4) . " GB";
-    
+
     $all .= "-- Run $job concurrently using $mem and $thr for stage '$nam'.\n"   if ( defined($concurrent));
     $all .= "-- Run under grid control using $mem and $thr for stage '$nam'.\n"   if (!defined($concurrent));
 
@@ -682,23 +682,23 @@ sub configureAssembler () {
 
     if      (getGlobal("genomeSize") < adjustGenomeSize("40m")) {
         setGlobalIfUndef("batMemory",   "2-16");        setGlobalIfUndef("batThreads",   "1-4");
-        setGlobalIfUndef("gfaMemory",   "2-4");         setGlobalIfUndef("gfaThreads",   "1");
+        setGlobalIfUndef("gfaMemory",   "2-8");         setGlobalIfUndef("gfaThreads",   "1-4");
 
     } elsif (getGlobal("genomeSize") < adjustGenomeSize("500m")) {
         setGlobalIfUndef("batMemory",   "16-64");       setGlobalIfUndef("batThreads",   "2-8");
-        setGlobalIfUndef("gfaMemory",   "2-4");         setGlobalIfUndef("gfaThreads",   "2-4");
+        setGlobalIfUndef("gfaMemory",   "4-8");         setGlobalIfUndef("gfaThreads",   "2-8");
 
     } elsif (getGlobal("genomeSize") < adjustGenomeSize("2g")) {
         setGlobalIfUndef("batMemory",   "32-256");      setGlobalIfUndef("batThreads",   "4-16");
-        setGlobalIfUndef("gfaMemory",   "4-8");         setGlobalIfUndef("gfaThreads",   "4-8");
+        setGlobalIfUndef("gfaMemory",   "8-16");         setGlobalIfUndef("gfaThreads",  "4-16");
 
     } elsif (getGlobal("genomeSize") < adjustGenomeSize("5g")) {
         setGlobalIfUndef("batMemory",   "128-512");     setGlobalIfUndef("batThreads",   "8-32");
-        setGlobalIfUndef("gfaMemory",   "8-16");        setGlobalIfUndef("gfaThreads",   "8-16");
+        setGlobalIfUndef("gfaMemory",   "16-32");        setGlobalIfUndef("gfaThreads",  "8-32");
 
     } else {
         setGlobalIfUndef("batMemory",   "256-1024");    setGlobalIfUndef("batThreads",   "16-64");
-        setGlobalIfUndef("gfaMemory",   "16-32");       setGlobalIfUndef("gfaThreads",   "16-64");
+        setGlobalIfUndef("gfaMemory",   "32-64");       setGlobalIfUndef("gfaThreads",   "16-64");
     }
 
     #  Finally, use all that setup to pick actual values for each component.

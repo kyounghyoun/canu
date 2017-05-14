@@ -32,7 +32,7 @@ my $cwd = getcwd();
 
 my $label    = "snapshot";     #  Change this to 'release' just before making a release.
 my $major    = "1";            #  ...and this too.
-my $minor    = "4";            #  ...and this too.
+my $minor    = "5";            #  ...and this too.
 
 my $commits  = "0";
 my $hash1    = undef;          #  This from 'git describe'
@@ -124,7 +124,7 @@ if      (defined($dirty)) {
 } elsif (defined($hash1)) {
     print F "#define CANU_VERSION           \"Canu snapshot ($hash1)\\n\"\n";
 } else {
-    print F "#define CANU_VERSION           \"Canu $label v$major.$minor\\n\"\n";
+    print F "#define CANU_VERSION           \"Canu $major.$minor\\n\"\n";
 }
 
 close(F);

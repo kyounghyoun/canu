@@ -107,7 +107,7 @@ sub utgcns ($$$) {
     print F "  -e " . getGlobal("cnsErrorRate") . " \\\n";
     print F "  -quick \\\n"      if (getGlobal("cnsConsensus") eq "quick");
     print F "  -pbdagcon \\\n"   if (getGlobal("cnsConsensus") eq "pbdagcon");
-    print F "  -edlib    \\\n"   if (getGlobal("canuIteration") > 0);
+    print F "  -edlib    \\\n"   if (getGlobal("canuIteration") >= 0);
     print F "  -utgcns \\\n"     if (getGlobal("cnsConsensus") eq "utgcns");
     print F "  -threads " . getGlobal("cnsThreads") . " \\\n";
     print F "&& \\\n";
@@ -117,7 +117,7 @@ sub utgcns ($$$) {
     print F "\n";
     print F "exit 0\n";
 
-    if (getGlobal("canuIteration") == 0) {
+    if (getGlobal("canuIteration") < 0) {
         print STDERR "-- Using fast alignment for consensus (iteration '", getGlobal("canuIteration"), "').\n";
     } else {
         print STDERR "-- Using slow alignment for consensus (iteration '", getGlobal("canuIteration"), "').\n";
@@ -125,6 +125,7 @@ sub utgcns ($$$) {
 
     close(F);
 
+    makeExecutable("$path/consensus.sh");
     stashFile("$path/consensus.sh");
 }
 
@@ -582,6 +583,9 @@ sub alignGFA ($) {
     goto allDone   if (fileExists("unitigging/4-unitigger/$asm.contigs.aligned.gfa") &&
                        fileExists("unitigging/4-unitigger/$asm.unitigs.aligned.gfa"));
 
+    #  If a large genome, run this on the grid, else, run in the canu process itself.
+    my $runGrid = (getGlobal("genomeSize") >= 40000000);
+
     fetchFile("$path/alignGFA.sh");
 
     if (! -e "$path/alignGFA.sh") {
@@ -590,7 +594,7 @@ sub alignGFA ($) {
         print F "\n";
         print F getBinDirectoryShellCode();
         print F "\n";
-        print F setWorkDirectoryShellCode($path);
+        print F setWorkDirectoryShellCode($path)   if ($runGrid);   #  If not local, need to cd first.
         print F "\n";
         print F fetchFileShellCode("unitigging/$asm.utgStore", "seqDB.v001.dat", "");
         print F fetchFileShellCode("unitigging/$asm.utgStore", "seqDB.v001.tig", "");
@@ -605,6 +609,7 @@ sub alignGFA ($) {
         print F fetchFileShellCode("unitigging/$asm.ctgStore", "seqDB.v002.tig", "");
         print F "\n";
         print F "\n";
+
         print F "if [ ! -e ./$asm.unitigs.aligned.gfa ] ; then\n";
         print F "  \$bin/alignGFA \\\n";
         print F "    -T ../$asm.utgStore 2 \\\n";
@@ -617,6 +622,7 @@ sub alignGFA ($) {
         print F "fi\n";
         print F "\n";
         print F "\n";
+
         print F "if [ ! -e ./$asm.contigs.aligned.gfa ] ; then\n";
         print F "  \$bin/alignGFA \\\n";
         print F "    -T ../$asm.ctgStore 2 \\\n";
@@ -629,8 +635,38 @@ sub alignGFA ($) {
         print F "fi\n";
         print F "\n";
         print F "\n";
+
+        print F "if [ ! -e ./$asm.unitigs.aligned.bed ] ; then\n";
+        print F "  \$bin/alignGFA -bed \\\n";
+        print F "    -T ../$asm.utgStore 2 \\\n";
+        print F "    -C ../$asm.ctgStore 2 \\\n";
+        print F "    -i ./$asm.unitigs.bed \\\n";
+        print F "    -o ./$asm.unitigs.aligned.bed \\\n";
+        print F "    -t " . getGlobal("gfaThreads") . " \\\n";
+        print F "  > ./$asm.unitigs.aligned.bed.err 2>&1";
+        print F "\n";
+        print F stashFileShellCode("$path", "$asm.unitigs.aligned.bed", "  ");
+        print F "fi\n";
+        print F "\n";
+        print F "\n";
+
+        print F "if [ ! -e ./$asm.unitigs.aligned.bed.gfa ] ; then\n";
+        print F "  \$bin/alignGFA -bed \\\n";
+        print F "    -T ../$asm.utgStore 2 \\\n";
+        print F "    -i ./$asm.unitigs.bed \\\n";
+        print F "    -o ./$asm.unitigs.aligned.bed.gfa \\\n";
+        print F "    -t " . getGlobal("gfaThreads") . " \\\n";
+        print F "  > ./$asm.unitigs.aligned.bed.gfa.err 2>&1";
+        print F "\n";
+        print F stashFileShellCode("$path", "$asm.unitigs.aligned.bed.gfa", "  ");
+        print F "fi\n";
+        print F "\n";
+        print F "\n";
+
         print F "if [ -e ./$asm.unitigs.aligned.gfa -a \\\n";
-        print F "     -e ./$asm.contigs.aligned.gfa ] ; then\n";
+        print F "     -e ./$asm.contigs.aligned.gfa -a \\\n";
+        print F "     -e ./$asm.unitigs.aligned.bed -a \\\n";
+        print F "     -e ./$asm.unitigs.aligned.bed.gfa ] ; then\n";
         print F "  echo GFA alignments updated.\n";
         print F "  exit 0\n";
         print F "else\n";
@@ -639,8 +675,7 @@ sub alignGFA ($) {
         print F "fi\n";
         close(F);
 
-        system("chmod +x $path/alignGFA.sh");
-
+        makeExecutable("$path/alignGFA.sh");
         stashFile("$path/alignGFA.sh");
     }
 
@@ -662,17 +697,16 @@ sub alignGFA ($) {
         caExit("failed to align GFA links.  Made " . ($attempt-1) . " attempts, jobs still failed", undef);
     }
 
-    #  Otherwise, run some jobs.  If the genome is small, just do it here and now, otherwise,
-    #  run on the grid.
+    #  Otherwise, run some jobs.
 
     emitStage($asm, "alignGFA", $attempt);
 
-    if (getGlobal("genomeSize") < 40000000) {
-        if (runCommand("$path", "./alignGFA.sh")) {
+    if ($runGrid) {
+        submitOrRunParallelJob($asm, "gfa", $path, "alignGFA", (1));
+    } else {
+        if (runCommand($path, "./alignGFA.sh")) {
             caExit("failed to align contigs", "./$asm.contigs.aligned.gfa.err");
         }
-    } else {
-        submitOrRunParallelJob($asm, "gfa", $path, "alignGFA", (1));
     }
 
     return;

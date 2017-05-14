@@ -488,6 +488,7 @@ sub merylConfigure ($$) {
 
     close(F);
 
+    makeExecutable("$path/meryl.sh");
     stashFile("$path/meryl.sh");
 
   finishStage:
@@ -634,7 +635,7 @@ sub merylProcess ($$) {
         fetchFile("$path/$ofile.mcdat");
         fetchFile("$path/$ofile.mcidx");
 
-        if ((! -e "$path/$ofile.mcdat") || 
+        if ((! -e "$path/$ofile.mcdat") ||
             (! -e "$path/$ofile.mcdat")) {
             caFailure("meryl can't dump frequent mers, databases don't exist.  Remove $path/meryl.success to try again.", undef);
         }

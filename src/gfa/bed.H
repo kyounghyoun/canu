@@ -23,85 +23,51 @@
  *  full conditions and disclaimers for each license.
  */
 
-#ifndef AS_UTL_GFA_H
-#define AS_UTL_GFA_H
+#ifndef AS_UTL_BED_H
+#define AS_UTL_BED_H
 
 #include "AS_global.H"
 #include "splitToWords.H"
 
 
 
-//  Features assumed to hold only the length, and we don't use it.
-
-class gfaSequence {
+class bedRecord {
 public:
-  gfaSequence();
-  gfaSequence(char *inLine);
-  gfaSequence(char *name, uint32 id, uint32 len);
-  ~gfaSequence();
+  bedRecord();
+  bedRecord(char *inLine);
+  ~bedRecord();
 
   void    load(char *inLine);
   void    save(FILE *outFile);
 
 public:
-  char   *_name;
-  uint32  _id;
-  char   *_sequence;
-  char   *_features;
-
-  uint32  _length;
-};
-
-
-
-
-class gfaLink {
-public:
-  gfaLink();
-  gfaLink(char *inLine);
-  gfaLink(char *Aname, uint32 Aid, bool Afwd,
-          char *Bname, uint32 Bid, bool Bfwd, char *cigar);
-  ~gfaLink();
-
-  void    load(char *inLine);
-  void    save(FILE *outFile);
-
-  void    alignmentLength(int32 &queryLen, int32 &refceLen, int32 &alignLen);
-
-public:
-  char   *_Aname;
+  char   *_Aname;    //  The 'chromosome'
   uint32  _Aid;      //  Canu specific.
-  bool    _Afwd;
 
-  char   *_Bname;
+  int32   _bgn;
+  int32   _end;
+
+  char   *_Bname;    //  The 'feature'
   uint32  _Bid;      //  Canu specific.
+
+  uint32  _score;
   bool    _Bfwd;
-
-  char   *_cigar;
-
-  char   *_features;
 };
 
 
-
-
-class gfaFile {
+class bedFile {
 public:
-  gfaFile();
-  gfaFile(char *inFile);
-  ~gfaFile();
+  bedFile(char *inFile);
+  ~bedFile();
 
   bool    loadFile(char *inFile);
   bool    saveFile(char *outFile);
 
 public:
-  char                  *_header;
-
-  vector<gfaSequence *>  _sequences;
-  vector<gfaLink *>      _links;
+  vector<bedRecord *>    _records;
 };
 
 
 
 
-#endif  //  AS_UTL_GFA_H
+#endif  //  AS_UTL_BED_H

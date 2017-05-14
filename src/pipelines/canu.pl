@@ -300,7 +300,7 @@ if ($setUpForNanopore > 0) {
     setGlobalIfUndef("corErrorRate",     0.500);
     setGlobalIfUndef("obtErrorRate",     0.144);
     setGlobalIfUndef("utgErrorRate",     0.144);
-    setGlobalIfUndef("cnsErrorRate",     0.144);
+    setGlobalIfUndef("cnsErrorRate",     0.192);
 } else {
     setGlobalIfUndef("corOvlErrorRate",  0.240);
     setGlobalIfUndef("obtOvlErrorRate",  0.045);
@@ -308,7 +308,7 @@ if ($setUpForNanopore > 0) {
     setGlobalIfUndef("corErrorRate",     0.300);
     setGlobalIfUndef("obtErrorRate",     0.045);
     setGlobalIfUndef("utgErrorRate",     0.045);
-    setGlobalIfUndef("cnsErrorRate",     0.045);
+    setGlobalIfUndef("cnsErrorRate",     0.075);
 }
 
 #  Finish setting parameters, then reset the bin directory using pathMap.
@@ -548,8 +548,6 @@ if (setOptions($mode, "correct") eq "correct") {
         buildCorrectionLayouts($asm);
         generateCorrectedReads($asm)  foreach (1..getGlobal("canuIterationMax") + 1);
         dumpCorrectedReads($asm);
-
-        estimateCorrectedError($asm, "cor");
 
         buildHTML($asm, "cor");
     }
