@@ -488,6 +488,7 @@ sub merylConfigure ($$) {
 
     close(F);
 
+    makeExecutable("$path/meryl.sh");
     stashFile("$path/meryl.sh");
 
   finishStage:
